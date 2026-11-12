@@ -9,7 +9,7 @@ const S = {
   acc: { steamKey: false, steamId: null, epic: null },
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
-  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent',
+  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', trophyDates: {},
   tab: 'ach', achF: 'all', openNews: 0, menu: null, sub: null, showSoft: false, busy: false, modal: null, homeY: 0,
 };
 const $ = (s) => document.querySelector(s);
@@ -70,6 +70,7 @@ const icon = {
   folder: I('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   star: (on) => `<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>`,
   upd: I('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>', 14),
+  crown: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-1.8 11H4.8z"/></svg>',
 };
 
 const cur = () => S.games.find((g) => g.id === S.sel) || null;
@@ -242,9 +243,12 @@ function filtered() {
     rating: (a, b) => (rating(b.id)?.stars || 0) - (rating(a.id)?.stars || 0) || b.playtimeMin - a.playtimeMin,
     size: (a, b) => b.size - a.size,
   };
-  return l.sort(by[S.sort]);
+  by.achn = (a, b) => (S.achsum[b.id]?.[0] || 0) - (S.achsum[a.id]?.[0] || 0) || b.playtimeMin - a.playtimeMin;
+  l.sort(by[S.sort]);
+  return S.dir === 'asc' ? l.reverse() : l;
 }
-const SORTS = [['recent', 'Joués récemment'], ['hours', 'Temps de jeu'], ['rating', 'Ma note'], ['pct', 'Complétion des succès'], ['az', 'Alphabétique'], ['size', 'Taille sur disque']];
+const arrow = () => (S.dir === 'asc' ? '↑' : '↓');
+const SORTS = [['recent', 'Joués récemment'], ['hours', 'Temps de jeu'], ['achn', 'Succès obtenus'], ['rating', 'Ma note'], ['pct', 'Complétion des succès'], ['az', 'Alphabétique'], ['size', 'Taille sur disque']];
 
 const normN = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 /** Every free-to-keep offer, all stores, flagged when already in the library. */
@@ -279,6 +283,7 @@ function sortMenu() {
   slot.innerHTML = S.menu === 'sort' ? `<div class="menu solid" role="menu" style="right:0;top:54px">
     <span class="mh">TRIER PAR</span>
     ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}">${l}${S.sort === k ? icon.check : ''}</button>`).join('')}
+    <button class="mi" data-act="sortdir">${S.dir === 'asc' ? 'Croissant ↑' : 'Décroissant ↓'}</button>
     <div class="sep"></div><span class="mh">AFFICHER</span>
     <button class="mi" data-act="soft">${S.showSoft ? 'Masquer les apps' : 'Afficher les apps'}<span class="r">${S.games.filter(isSoft).length}</span></button>
   </div>` : '';
@@ -327,11 +332,12 @@ function paintHome() {
         <div class="sub">${all.length} ${T('jeux', 'games')} · ${all.filter((g) => g.installed).length} ${T('installés', 'installed')}${updates ? ` · <button class="alink" data-act="col" data-v="Mises à jour" style="min-height:0;display:inline">${updates} ${T('MAJ', updates > 1 ? 'updates' : 'update')}</button>` : ''}${S.busy ? ' · …' : ''}</div>
       </div>
       <div class="kpis glass">
-        <div><span class="k">TEMPS DE JEU</span><span class="v">${fmtH(total)}</span>
-          <span class="muted" style="font-size:12px">${bySrc.map(([k, v]) => `${SRC[k]} ${fmtH(v)}`).join(' · ') || '—'}</span></div>
-        <div><span class="k">SUCCÈS</span><span class="v">${tot ? un.toLocaleString(LOCALE) : '—'}${tot ? `<small>/ ${tot.toLocaleString(LOCALE)}</small>` : ''}</span>
-          ${tot ? `<span class="bar"><span style="width:${Math.round((un / tot) * 100)}%"></span></span>` : `<button class="alink" data-act="settings" style="min-height:0">Relier →</button>`}</div>
-        <div><span class="k">100 %</span><span class="v">${tot ? perfect : '—'}</span></div>
+        <button class="kpi" data-act="kpi" data-v="hours" aria-pressed="${S.sort === 'hours'}"><span class="k">TEMPS DE JEU<span>${S.sort === 'hours' ? arrow() : ''}</span></span><span class="v">${fmtH(total)}</span>
+          <span class="muted" style="font-size:12px">${bySrc.map(([k, v]) => `${SRC[k]} ${fmtH(v)}`).join(' · ') || '—'}</span></button>
+        ${tot ? `<button class="kpi" data-act="kpi" data-v="achn" aria-pressed="${S.sort === 'achn'}"><span class="k">SUCCÈS<span>${S.sort === 'achn' ? arrow() : ''}</span></span><span class="v">${un.toLocaleString(LOCALE)}<small>/ ${tot.toLocaleString(LOCALE)}</small></span>
+          <span class="bar"><span style="width:${Math.round((un / tot) * 100)}%"></span></span></button>`
+          : `<div><span class="k">SUCCÈS</span><span class="v">—</span><button class="alink" data-act="settings" style="min-height:0">Relier →</button></div>`}
+        <button class="kpi gold" data-act="trophy" ${tot ? '' : 'disabled'}><span class="k">${icon.crown} 100 %</span><span class="v">${tot ? perfect : '—'}</span></button>
       </div>
     </section>
 
@@ -371,10 +377,10 @@ function paintHome() {
         <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(lbl(col))}</h2><span class="muted">${list.length}${S.q ? ` · « ${esc(S.q)} »` : ''}</span></div>
         <div class="row2">
           ${isCustom(col) ? `<button class="btn2" data-act="delcol" data-v="${esc(col)}">Supprimer la collection</button>` : ''}
-          <button class="btn2" data-act="addgame" title=".exe, .lnk">+ Jeu</button>
+          <button class="glass pillbtn" data-act="addgame" title=".exe, .lnk">+ Jeu</button>
           <div class="anchor">
             <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
-              ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong></button>
+              ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong> ${arrow()}</button>
             <div id="sort-menu"></div>
           </div>
         </div>
@@ -603,6 +609,42 @@ function paintGame() {
       <div class="grid row">${similar.map(cover).join('')}</div></section>` : ''}`;
 }
 
+// ---------- HALL OF FAME (100 %) ----------
+
+const perfectGames = () => S.games.filter((g) => { const a = S.achsum[g.id]; return a && a[1] && a[0] === a[1] && !isExtra(g); });
+async function loadTrophyDates() {
+  for (const g of perfectGames()) {
+    if (S.trophyDates[g.id] !== undefined) continue;
+    S.trophyDates[g.id] = 0;
+    invoke('achievements', { id: g.id }).then((l) => {
+      S.trophyDates[g.id] = Math.max(0, ...l.list.map((x) => x.unlockTime || 0));
+      if (S.view === 'trophy') renderTrophy();
+    }).catch(() => {});
+  }
+}
+function renderTrophy() {
+  theme('#F5C84C', '#140F04');
+  setBg('', true);
+  const list = perfectGames().sort((a, b) => (S.trophyDates[b.id] || 0) - (S.trophyDates[a.id] || 0) || S.achsum[b.id][1] - S.achsum[a.id][1]);
+  const ach = list.reduce((n, g) => n + S.achsum[g.id][1], 0);
+  const hours = list.reduce((n, g) => n + g.playtimeMin, 0);
+  $('#trophy').innerHTML = `
+    <section class="hof-head">
+      <span class="hof-crown" aria-hidden="true"><svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-1.8 11H4.8z"/><rect x="4.8" y="19.2" width="14.4" height="1.8" rx=".9"/></svg></span>
+      <h1>Panthéon</h1>
+      <div class="hof-kpis"><span><b>${list.length}</b>${T('jeux à 100 %', 'games at 100%')}</span><span><b>${ach.toLocaleString(LOCALE)}</b>${T('succès', 'achievements')}</span><span><b>${fmtH(hours)}</b>${T('de jeu', 'played')}</span></div>
+    </section>
+    <section class="hof-grid">
+      ${list.map((g, i) => `<button class="hof-card" data-act="sel" data-id="${esc(g.id)}" style="--g:${g.accent || '#F5C84C'}">
+        <span class="hof-art">${g.cover ? `<img src="${esc(coverSrc(g))}" alt="" loading="lazy">` : `<span class="ph">${esc(g.name)}</span>`}
+          <span class="hof-badge">${icon.crown} 100%</span>${i < 3 ? `<span class="hof-rank">#${i + 1}</span>` : ''}</span>
+        <span class="hof-meta"><b class="nm">${esc(g.name)}</b>
+          <span>${S.achsum[g.id][1]} ${T('succès', S.achsum[g.id][1] > 1 ? 'achievements' : 'achievement')} · ${fmtH(g.playtimeMin)}</span>
+          <span class="hof-date">${S.trophyDates[g.id] ? day(S.trophyDates[g.id]) : ''}</span></span>
+      </button>`).join('') || `<div class="empty">${T('Aucun jeu à 100 % pour l’instant.', 'No 100% games yet.')}</div>`}
+    </section>`;
+}
+
 // ---------- STATS ----------
 
 function ratingsBox() {
@@ -815,12 +857,13 @@ function render() {
   document.body.classList.toggle('big', !!P.big);
   document.body.classList.toggle('noglass', !P.glass);
   document.body.classList.toggle('nomotion', !P.motion);
-  for (const v of ['home', 'game', 'stats']) $('#' + v).hidden = S.view !== v;
+  for (const v of ['home', 'game', 'stats', 'trophy']) $('#' + v).hidden = S.view !== v;
+  if (S.view !== 'trophy') $('#trophy').innerHTML = '';
   if (S.view !== 'home') $('#home').innerHTML = '';
   if (S.view !== 'game') $('#game').innerHTML = '';
   if (S.view !== 'stats') $('#stats').innerHTML = '';
   renderTop();
-  if (S.view === 'home') renderHome(); else if (S.view === 'game') renderGame(); else renderStats();
+  if (S.view === 'home') renderHome(); else if (S.view === 'game') renderGame(); else if (S.view === 'trophy') renderTrophy(); else renderStats();
   renderFree(); renderFriends(); renderModal();
 }
 function select(id) {
@@ -933,7 +976,10 @@ document.addEventListener('click', async (e) => {
     case 'src': S.src = v; S.col = 'Tout'; if (S.view !== 'home') goHome(); else render(); return;
     case 'col': S.col = v; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'gocol': S.col = v; S.view = 'home'; render(); $('#lib')?.scrollIntoView({ behavior: 'smooth' }); return;
-    case 'sort': S.sort = v; S.menu = null; renderHome(); return;
+    case 'sort': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.menu = null; renderHome(); return;
+    case 'sortdir': S.dir = S.dir === 'asc' ? 'desc' : 'asc'; S.menu = null; renderHome(); return;
+    case 'kpi': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.col = 'Tout'; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
+    case 'trophy': S.view = 'trophy'; S.homeY = window.scrollY; render(); window.scrollTo({ top: 0 }); loadTrophyDates(); return;
     case 'soft': S.showSoft = !S.showSoft; S.menu = null; renderHome(); return;
     case 'refresh': refresh(); return;
     case 'rescan': S.menu = null; refresh(true); toast('…'); return;
@@ -1035,8 +1081,17 @@ function commitSettingsText() {
 }
 
 let qTimer;
+function searchMode() {
+  const on = document.activeElement?.id === 'q' || !!S.q.trim();
+  if (document.body.classList.contains('searching') === on) return;
+  document.body.classList.toggle('searching', on);
+  if (S.view === 'home') { window.scrollTo({ top: 0 }); layoutGrid(); paintGrid(true); }
+}
+$('#q').addEventListener('focus', () => { if (S.view !== 'home') { S.view = 'home'; render(); } searchMode(); });
+$('#q').addEventListener('blur', () => setTimeout(searchMode, 150));
 $('#q').addEventListener('input', (e) => {
   S.q = e.target.value;
+  searchMode();
   clearTimeout(qTimer);
   qTimer = setTimeout(() => { if (S.view !== 'home') { S.view = 'home'; render(); } else renderHome(); }, 80);
 });

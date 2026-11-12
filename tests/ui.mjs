@@ -308,6 +308,54 @@ await check('Bouton « Ajouter un jeu »', async () => {
   return 'présent (la fenêtre de choix de fichier n\'est pas testable automatiquement)';
 });
 
+await check('Chiffres cliquables : temps de jeu et succès, ↑/↓', async () => {
+  const names = () => page.$$eval('#vgrid .cov .nm', (l) => l.slice(0, 3).map((x) => x.textContent));
+  await click('[data-act="kpi"][data-v="hours"]'); await sleep(900);
+  const desc = await names();
+  await click('[data-act="kpi"][data-v="hours"]'); await sleep(900);
+  const asc = await names();
+  assert(desc[0] !== asc[0], `ordre identique : ${desc[0]}`);
+  await click('[data-act="kpi"][data-v="achn"]'); await sleep(900);
+  const ach = await names();
+  const sortTxt = await text('[data-menu="sort"]');
+  await click('[data-menu="sort"]'); await click('#sort-menu [data-v="recent"]'); await sleep(400);
+  return `temps ↓ ${desc[0]} · ↑ ${asc[0]} · succès ↓ ${ach[0]} · bouton « ${sortTxt} »`;
+});
+
+await check('Panthéon (100 %)', async () => {
+  await page.evaluate(() => window.scrollTo(0, 0)); await sleep(300);
+  await click('[data-act="trophy"]'); await sleep(1500);
+  const n = await count('.hof-card');
+  const title = await text('.hof-head h1');
+  const dates = await page.$$eval('.hof-date', (l) => l.filter((x) => x.textContent.trim()).length);
+  assert(n > 0, 'aucun jeu à 100 %');
+  await page.keyboard.press('Escape'); await sleep(500);
+  assert(await page.$('#vgrid'), 'retour raté');
+  return `${title} · ${n} jeux · ${dates} dates`;
+});
+
+await check('Recherche : seuls les jeux restent', async () => {
+  await page.focus('#q'); await sleep(400);
+  const hidden = await page.evaluate(() => ['.cols-wrap', '.home-head', '.resume'].every((s) => !document.querySelector(s) || getComputedStyle(document.querySelector(s)).display === 'none'));
+  const top = await page.evaluate(() => Math.round(document.querySelector('#vgrid').getBoundingClientRect().top));
+  await page.evaluate(() => document.activeElement.blur()); await sleep(500);
+  const back = await page.evaluate(() => getComputedStyle(document.querySelector('.cols-wrap')).display !== 'none');
+  assert(hidden, 'sections encore visibles'); assert(back, 'sections non revenues');
+  return `grille à ${top}px du haut, sections revenues au flou`;
+});
+
+await check('Jaquettes non installées sans nom par-dessus', async () => {
+  await click('.col[data-v="Tout"]'); await sleep(500);
+  const r = await page.evaluate(() => {
+    const c = document.querySelector('#vgrid .cov.notinst'); if (!c) return null;
+    const img = c.querySelector('.art img'); const st = getComputedStyle(img);
+    return { op: st.opacity, filter: st.filter, nm: getComputedStyle(c.querySelector('.meta .nm')).color };
+  });
+  assert(r, 'aucun jeu non installé visible');
+  assert(+r.op === 1, `image encore transparente (${r.op}) : le nom en dessous transparaît`);
+  return `opacité 1, ${r.filter}, nom ${r.nm}`;
+});
+
 await check('Mémoire', async () => {
   const m = await page.evaluate(() => performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null);
   return m ? `tas JS ${m} Mo` : 'n/d';
