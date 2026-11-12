@@ -64,7 +64,7 @@ const EN = {
   'Steam ne renvoie pas tes succès : passe les « détails de jeu » de ton profil en public.': 'Steam hides your achievements: set game details to public.',
   'Une clé Steam fait 32 caractères (chiffres et lettres A-F).': 'A Steam key is 32 characters (0-9, A-F).', 'Steam refuse cette clé, ou ton profil est privé.': 'Key rejected, or profile is private.',
   'Code invalide : copie la valeur « authorizationCode ».': 'Invalid code: copy the authorizationCode value.', 'Aucun fichier de sauvegarde trouvé sur ce PC.': 'No save files found.',
-  'Jeu introuvable': 'Game not found', Panthéon: 'Hall of Fame', 'Croissant ↑': 'Ascending ↑', 'Décroissant ↓': 'Descending ↓', 'Succès obtenus': 'Achievements unlocked', 'Clé Steam requise (Paramètres).': 'Steam key required (Settings).', 'Connecte Epic (Paramètres).': 'Connect Epic (Settings).',
+  'Jeu introuvable': 'Game not found', ORDRE: 'ORDER', Décroissant: 'Descending', Croissant: 'Ascending', 'Inclure les apps': 'Include apps', 'Afficher plus': 'Show more', Panthéon: 'Hall of Fame', 'Croissant ↑': 'Ascending ↑', 'Décroissant ↓': 'Descending ↓', 'Succès obtenus': 'Achievements unlocked', 'Clé Steam requise (Paramètres).': 'Steam key required (Settings).', 'Connecte Epic (Paramètres).': 'Connect Epic (Settings).',
   'Profil Steam privé (Détails de jeu → Public).': 'Private Steam profile (Game details → Public).', 'À jour': 'Up to date', 'jeux': 'games', 'installés': 'installed', 'HowLongToBeat injoignable': 'HowLongToBeat unreachable', 'Déjà à jour': 'Already up to date',
 };
 

@@ -340,12 +340,70 @@ fn launch(app: AppHandle, id: String) -> Result<(), String> {
     let st = app.state::<AppState>();
     let g = st.lib.lock().unwrap().iter().find(|g| g.id == id).cloned().ok_or("Jeu introuvable")?;
     open_target(&g.launch)?;
-    if let Some(dir) = g.install_path.filter(|_| g.installed) {
+    // hand-added games are measured by watch_pc (also when started outside Ultimate)
+    if let Some(dir) = g.install_path.filter(|_| g.installed && g.source != "pc") {
         if st.tracking.lock().unwrap().insert(id.clone()) {
             track(app.clone(), id, dir);
         }
     }
     Ok(())
+}
+
+/// Playtime of hand-added games: every 20 s, is their .exe running? Counts from start to exit,
+/// however the game was launched.
+fn watch_pc(app: AppHandle) {
+    std::thread::spawn(move || {
+        use std::time::{Duration, Instant};
+        use sysinfo::{ProcessesToUpdate, System};
+        let mut sys = System::new();
+        let mut running: HashMap<String, Instant> = HashMap::new();
+        loop {
+            std::thread::sleep(Duration::from_secs(20));
+            let st = app.state::<AppState>();
+            let games: Vec<(String, String)> = customs(&st).into_iter()
+                .filter(|c| c.exe.to_lowercase().ends_with(".exe"))
+                .map(|c| (c.id, c.exe.to_lowercase())).collect();
+            if games.is_empty() && running.is_empty() {
+                continue;
+            }
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            let live: HashSet<String> = sys.processes().values().filter_map(|p| p.exe()).map(|e| e.to_string_lossy().to_lowercase()).collect();
+            let mut changed = false;
+            for (id, exe) in &games {
+                let on = live.contains(exe);
+                match (on, running.get(id).copied()) {
+                    (true, None) => {
+                        running.insert(id.clone(), Instant::now());
+                        if let Some(g) = st.lib.lock().unwrap().iter_mut().find(|g| &g.id == id) {
+                            g.last_played = now();
+                        }
+                        changed = true;
+                    }
+                    (false, Some(start)) => {
+                        running.remove(id);
+                        let mins = (start.elapsed().as_secs() + 30) / 60;
+                        if mins > 0 {
+                            let mut t = st.tracked.lock().unwrap();
+                            *t.entry(id.clone()).or_insert(0) += mins;
+                            save(&st.dir.join("tracked.json"), &*t);
+                        }
+                        if let Some(g) = st.lib.lock().unwrap().iter_mut().find(|g| &g.id == id) {
+                            g.tracked_min += mins;
+                            g.playtime_min += mins;
+                            g.last_played = now();
+                        }
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            if changed {
+                let l = st.lib.lock().unwrap().clone();
+                save(&st.dir.join("library.json"), &l);
+                let _ = app.emit("library", &l);
+            }
+        }
+    });
 }
 
 fn now() -> u64 {
@@ -1121,6 +1179,7 @@ pub fn run() {
                 }
             }
             tauri::async_runtime::spawn(watch_deals(app.handle().clone()));
+            watch_pc(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version])

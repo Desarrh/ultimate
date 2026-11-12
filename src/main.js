@@ -9,7 +9,7 @@ const S = {
   acc: { steamKey: false, steamId: null, epic: null },
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
-  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', trophyDates: {},
+  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', achShow: 9, homeDirty: false, trophyDates: {},
   tab: 'ach', achF: 'all', openNews: 0, menu: null, sub: null, showSoft: false, busy: false, modal: null, homeY: 0,
 };
 const $ = (s) => document.querySelector(s);
@@ -70,6 +70,7 @@ const icon = {
   folder: I('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   star: (on) => `<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>`,
   upd: I('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>', 14),
+  tick: '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>',
   crown: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-1.8 11H4.8z"/></svg>',
 };
 
@@ -92,7 +93,7 @@ const isHidden = (g) => S.user.hidden.includes(g.id);
 const isFav = (g) => S.user.favorites.includes(g.id);
 const visible = () => S.games.filter((g) => !isExtra(g) && (S.col === 'Masqués' ? isHidden(g) : !isHidden(g)) && (!isSoft(g) || S.showSoft || S.col === 'Logiciel') && (!isDemo(g) || S.col === 'Démo' || S.col === 'Masqués'));
 const pct = (id) => { const s = S.achsum[id]; return s && s[1] ? Math.round((s[0] / s[1]) * 100) : null; };
-const saveUser = () => invoke('set_user', { u: S.user }).catch((e) => toast(String(e)));
+const saveUser = () => { S.homeDirty = true; return invoke('set_user', { u: S.user }).catch((e) => toast(String(e))); };
 
 function toast(msg) {
   const t = $('#toast');
@@ -151,12 +152,12 @@ function cover(g) {
   return `<button class="cov${g.installed ? '' : ' notinst'}" data-act="sel" data-id="${esc(g.id)}" aria-label="${esc(g.name)}" style="--g:${g.accent || '#000'}">
     <span class="art" style="background:${g.deep || '#1A1A20'}">
       <span class="ph">${esc(g.name)}</span>
-      ${g.cover ? `<img src="${esc(coverSrc(g))}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ''}
+      ${g.cover ? `<img src="${esc(coverSrc(g))}" alt="" onerror="this.remove()">` : ''}
       <span class="badges">${g.update ? `<span class="srcb upd">${icon.upd}MAJ</span>` : ''}${g.source !== 'steam' ? `<span class="srcb">${SRC[g.source].toUpperCase()}</span>` : ''}</span>
       ${memo || isFav(g) ? `<span class="memob">${isFav(g) ? `<span style="color:#FFD45C">${icon.star(true)}</span>` : icon.pen}</span>` : ''}
       ${p !== null ? `<span class="pb"><span style="width:${p}%;background:${p === 100 ? '#6EE7A8' : g.accent || '#fff'}"></span></span>` : ''}
     </span>
-    <span class="meta"><span class="nm">${esc(g.name)}</span><span class="h">${rating(g.id)?.stars ? `<span class="rt">${starTxt(rating(g.id).stars)}</span>` : g.playtimeMin ? fmtH(g.playtimeMin) : ''}</span></span>
+    <span class="meta"><span class="nm">${esc(g.name)}</span><span class="h">${[g.playtimeMin ? fmtH(g.playtimeMin) : '', S.achsum[g.id] ? `${S.achsum[g.id][0]}/${S.achsum[g.id][1]}` : '', rating(g.id)?.stars ? `<span class="rt">${starTxt(rating(g.id).stars)}</span>` : ''].filter(Boolean).join(' · ') || '&nbsp;'}</span></span>
   </button>`;
 }
 
@@ -174,7 +175,7 @@ function layoutGrid() {
   const min = ({ S: 118, M: 150, L: 200 }[P.size] || 150) + (P.big ? 50 : 0); const gap = 20; const rowGap = 24;
   VG.cols = Math.max(1, Math.floor((W + gap) / (min + gap)));
   const itemW = (W - gap * (VG.cols - 1)) / VG.cols;
-  VG.cellH = Math.ceil(itemW * 1.5 + 9 + 20);
+  VG.cellH = Math.ceil(itemW * 1.5 + 8 + 42);
   VG.rowH = VG.cellH + rowGap;
   host.style.height = `${Math.max(0, Math.ceil(VG.list.length / VG.cols) * VG.rowH - rowGap)}px`;
 }
@@ -282,10 +283,11 @@ function sortMenu() {
   $('[data-menu="sort"]')?.setAttribute('aria-expanded', String(S.menu === 'sort'));
   slot.innerHTML = S.menu === 'sort' ? `<div class="menu solid" role="menu" style="right:0;top:54px">
     <span class="mh">TRIER PAR</span>
-    ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}">${l}${S.sort === k ? icon.check : ''}</button>`).join('')}
-    <button class="mi" data-act="sortdir">${S.dir === 'asc' ? 'Croissant ↑' : 'Décroissant ↓'}</button>
-    <div class="sep"></div><span class="mh">AFFICHER</span>
-    <button class="mi" data-act="soft">${S.showSoft ? 'Masquer les apps' : 'Afficher les apps'}<span class="r">${S.games.filter(isSoft).length}</span></button>
+    ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}"><span class="rd"></span>${l}</button>`).join('')}
+    <div class="sep"></div><span class="mh">ORDRE</span>
+    ${[['desc', 'Décroissant'], ['asc', 'Croissant']].map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.dir === k}" data-act="sortdir" data-v="${k}"><span class="rd"></span>${l}</button>`).join('')}
+    <div class="sep"></div>
+    <button class="mi" role="menuitemcheckbox" aria-checked="${S.showSoft}" data-act="soft"><span class="cb">${S.showSoft ? icon.tick : ''}</span>Inclure les apps<span class="r">${S.games.filter(isSoft).length}</span></button>
   </div>` : '';
 }
 function optsSlot() {
@@ -305,7 +307,16 @@ function keepScroll(host, paint) {
   if (Math.abs(window.scrollY - y) > 1) window.scrollTo({ top: y, behavior: 'instant' });
 }
 
-function renderHome() { keepScroll($('#home'), paintHome); }
+function renderHome() { S.homeDirty = false; keepScroll($('#home'), paintHome); }
+function homeTheme() {
+  const all = S.games.filter(isGame);
+  const last = [...all].filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed)[0];
+  theme(catColor(S.col));
+  const wpG = P.wp === 'game' && S.games.find((x) => x.id === P.wpGame);
+  if (P.wp === 'file' && wpPath) setBg(loc(wpPath, P.wpBlur > 8 ? 1280 : bgW()), false, true);
+  else if (wpG) setBg(th(wpG.hero || wpG.cover, P.wpBlur > 8 ? 1280 : bgW()), false, true);
+  else setBg(bgSrc(last, true), true);
+}
 function paintHome() {
   const all = S.games.filter(isGame);
   const total = all.reduce((s, g) => s + g.playtimeMin, 0);
@@ -357,7 +368,7 @@ function paintHome() {
 
     <section class="cols-wrap">
       <div class="cols-head"><div><h2>Collections</h2></div>
-        <button class="btn2" data-act="newcol">+ Collection</button></div>
+        <button class="glass pillbtn" data-act="newcol">+ Collection</button></div>
       <div class="cols" role="group" aria-label="Collections">
         ${cols.map((x) => `<button class="col" data-act="col" data-v="${esc(x.c)}" aria-pressed="${x.c === col}" style="--c:${catColor(x.c)}">
           <span class="fan">
@@ -470,11 +481,12 @@ function achPanel(g) {
       </div>
       <div class="fseg glass" role="group" aria-label="Filtrer">${F.map(([k, x]) => `<button data-act="achf" data-v="${k}" aria-pressed="${S.achF === k}">${x}</button>`).join('')}</div>
     </div>${note}
-    <div class="achs">${l.map((x) => `<div class="ach${x.unlocked ? ' on' : ''}">
+    <div class="achs">${l.slice(0, S.achShow).map((x) => `<div class="ach${x.unlocked ? ' on' : ''}">
         ${x.icon ? `<img src="${esc(x.icon)}" alt="" loading="lazy">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
         <span class="t"><b>${esc(x.name)}</b><span>${esc(x.desc)}</span></span>
         <span class="r">${x.rarity != null ? (x.rarity < 10 ? `<span class="rare">${dec(x.rarity)}${PS}%</span>` : `${Math.round(x.rarity)}${PS}%`) : ''}<span>${x.unlocked ? (x.unlockTime ? day(x.unlockTime) : 'Débloqué') : 'Verrouillé'}</span></span>
-      </div>`).join('') || '<div class="empty">Rien dans ce filtre.</div>'}</div>`;
+      </div>`).join('') || '<div class="empty">Rien dans ce filtre.</div>'}</div>
+    ${l.length > S.achShow ? `<div class="more-row"><button class="btn2" data-act="achmore">Afficher plus</button><span class="muted">${S.achShow} / ${l.length}</span></div>` : ''}`;
 }
 
 function newsPanel(g) {
@@ -859,7 +871,6 @@ function render() {
   document.body.classList.toggle('nomotion', !P.motion);
   for (const v of ['home', 'game', 'stats', 'trophy']) $('#' + v).hidden = S.view !== v;
   if (S.view !== 'trophy') $('#trophy').innerHTML = '';
-  if (S.view !== 'home') $('#home').innerHTML = '';
   if (S.view !== 'game') $('#game').innerHTML = '';
   if (S.view !== 'stats') $('#stats').innerHTML = '';
   renderTop();
@@ -868,18 +879,29 @@ function render() {
 }
 function select(id) {
   if (S.view === 'home') S.homeY = window.scrollY;
-  S.sel = id; S.view = 'game'; S.openNews = 0; S.menu = null; S.sub = null; S.achF = 'all'; S.tab = 'ach';
+  S.sel = id; S.view = 'game'; S.openNews = 0; S.menu = null; S.sub = null; S.achF = 'all'; S.tab = 'ach'; S.achShow = 9;
   render();
   window.scrollTo({ top: 0 });
   const g = cur();
   ensureNews(g); ensureAch(g); ensureHltb(g); if (g?.source === 'steam') ensureShots(g);
 }
 function goHome() {
-  const back = S.view === 'game';
+  const back = S.view !== 'home';
   S.view = 'home'; S.menu = null; S.sub = null;
-  render();
-  window.scrollTo({ top: back ? S.homeY : 0 });
-  paintGrid(true);
+  if (S.homeDirty || !$('#home').innerHTML) {
+    S.homeDirty = false;
+    render();
+    window.scrollTo({ top: back ? S.homeY : 0, behavior: 'instant' });
+    paintGrid(true);
+    return;
+  }
+  // unchanged: just show it again (images already decoded), restore theme and position
+  document.body.classList.add('home');
+  for (const v of ['home', 'game', 'stats', 'trophy']) $('#' + v).hidden = v !== 'home';
+  $('#game').innerHTML = ''; $('#stats').innerHTML = ''; $('#trophy').innerHTML = '';
+  renderTop(); homeTheme(); renderMenus();
+  window.scrollTo({ top: back ? S.homeY : 0, behavior: 'instant' });
+  paintGrid();
 }
 
 async function refresh(force = false) {
@@ -895,6 +917,7 @@ async function saveMemo() {
   const text = ta.value.trim();
   await invoke('set_memo', { id: g.id, text });
   if (text) S.memos[g.id] = text; else delete S.memos[g.id];
+  S.homeDirty = true;
   toast(text ? 'Enregistré' : 'Effacé');
   renderGame();
 }
@@ -940,7 +963,8 @@ document.addEventListener('click', async (e) => {
     case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
     case 'tab': S.tab = v; S.menu = null; if (v === 'shots') ensureShots(g); renderGame(); $('#panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       if (v === 'memo') setTimeout(() => $('#memo-ta')?.focus(), 350); return;
-    case 'achf': S.achF = v; renderGame(); return;
+    case 'achf': S.achF = v; S.achShow = 9; renderGame(); return;
+    case 'achmore': S.achShow += 30; renderGame(); return;
     case 'reach': S.menu = null; ensureAch(g, true); renderGame(); return;
     case 'news': S.openNews = S.openNews === +v ? -1 : +v; renderGame(); return;
     case 'quick': { const ta = $('#memo-ta'); ta.value = (ta.value.trimEnd() ? ta.value.trimEnd() + '\n' : '') + v + ' : '; ta.focus(); $('#memo-state').textContent = 'Non enregistré'; return; }
@@ -976,11 +1000,11 @@ document.addEventListener('click', async (e) => {
     case 'src': S.src = v; S.col = 'Tout'; if (S.view !== 'home') goHome(); else render(); return;
     case 'col': S.col = v; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'gocol': S.col = v; S.view = 'home'; render(); $('#lib')?.scrollIntoView({ behavior: 'smooth' }); return;
-    case 'sort': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.menu = null; renderHome(); return;
-    case 'sortdir': S.dir = S.dir === 'asc' ? 'desc' : 'asc'; S.menu = null; renderHome(); return;
+    case 'sort': S.sort = v; S.dir = 'desc'; renderHome(); return;
+    case 'sortdir': S.dir = v; renderHome(); return;
     case 'kpi': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.col = 'Tout'; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'trophy': S.view = 'trophy'; S.homeY = window.scrollY; render(); window.scrollTo({ top: 0 }); loadTrophyDates(); return;
-    case 'soft': S.showSoft = !S.showSoft; S.menu = null; renderHome(); return;
+    case 'soft': S.showSoft = !S.showSoft; renderHome(); return;
     case 'refresh': refresh(); return;
     case 'rescan': S.menu = null; refresh(true); toast('…'); return;
     case 'settings': S.modal = 'settings'; S.menu = null; await loadAccounts(); renderModal(); return;
@@ -1183,7 +1207,7 @@ function onLibrary(list) {
   S.games = list;
   if (pending) return;
   pending = true;
-  requestAnimationFrame(() => { pending = false; renderTop(); if (S.view === 'home') renderHome(); });
+  requestAnimationFrame(() => { pending = false; renderTop(); if (S.view === 'home') renderHome(); else S.homeDirty = true; });
 }
 
 (async () => {
@@ -1195,7 +1219,7 @@ function onLibrary(list) {
   render();
   if (P.big) getCurrentWindow().setFullscreen(true).catch(() => {});
   await listen('library', (e) => onLibrary(e.payload));
-  await listen('achsum', (e) => { S.achsum = e.payload; if (S.view === 'home') onLibrary(S.games); });
+  await listen('achsum', (e) => { S.achsum = e.payload; if (S.view === 'home') onLibrary(S.games); else S.homeDirty = true; });
   await loadAccounts();
   refresh();
   loadSocial();

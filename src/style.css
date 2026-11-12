@@ -374,7 +374,6 @@ body.searching .lib { padding-top: 24px; }
 .cov .meta .nm { color: #fff; }
 .cov .meta .h { color: #E4E4EA; }
 .cov .meta, .home-head .sub, .sec-head .muted, .cols-head .muted { text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 0 8px rgba(0,0,0,.8); }
-body.wp .cov .meta { background: rgba(8,8,12,.72); border-radius: 8px; padding: 3px 7px; margin-top: -2px; }
 body.wp .home-head .sub, body.wp .sec-head .muted { display: inline-block; background: rgba(8,8,12,.72); border-radius: 8px; padding: 3px 10px; color: #EDEDF2; }
 body.wp h2, body.wp .home-head h1 { text-shadow: 0 2px 12px rgba(0,0,0,.85); }
 .hof-head { padding: 64px 56px 32px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
@@ -397,3 +396,17 @@ body.wp h2, body.wp .home-head h1 { text-shadow: 0 2px 12px rgba(0,0,0,.85); }
 .hof-meta { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: #E4DCC6; }
 .hof-meta b { font-size: 14px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hof-date { color: #C9B27A; font-size: 12px; }
+
+/* v6: Epic-like captions, sort radios/checkbox, show more, view transition */
+.cov .meta { flex-direction: column; justify-content: flex-start; gap: 2px; }
+.cov .meta .nm { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -.005em; }
+.cov .meta .h { font-size: 13px; font-weight: 500; color: #E8E8EE; }
+.cov .meta, .hof-meta { text-shadow: 0 1px 3px rgba(0,0,0,.9), 0 0 10px rgba(0,0,0,.6); }
+.mi .rd { width: 16px; height: 16px; border-radius: 8px; border: 2px solid #8A8A94; flex: none; box-sizing: border-box; }
+.mi[aria-checked="true"] .rd { border: 5px solid var(--a); }
+.mi .cb { width: 16px; height: 16px; border-radius: 4px; border: 2px solid #8A8A94; flex: none; box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #0A0A0C; }
+.mi[aria-checked="true"] .cb { background: var(--a); border-color: var(--a); }
+.more-row { padding: 0 24px 24px; display: flex; align-items: center; gap: 14px; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+main:not([hidden]) { animation: viewIn .22s ease; }
+body.nomotion main { animation: none; }

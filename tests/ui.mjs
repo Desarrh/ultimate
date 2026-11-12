@@ -130,17 +130,24 @@ await check('Aucun saut de page à l\'ouverture des menus', async () => {
   const sorted = await pos();
   const moved = [open, closed, free, sorted].map((p) => Math.abs(p.y - before.y) + Math.abs(p.lib - before.lib));
   assert(moved.every((d) => d <= 2), `la page a bougé : ${moved.join(' / ')} px (ouvrir / fermer / cadeau / trier)`);
-  await clickKeep('[data-menu="sort"]'); await sleep(300); await clickKeep('#sort-menu [data-v="recent"]'); await sleep(300);
+  await clickKeep('#sort-menu [data-v="recent"]'); await sleep(300); await clickKeep('[data-menu="sort"]'); await sleep(300);
   await page.evaluate(() => window.scrollTo(0, 0));
   return `0 px de décalage (ouvrir, fermer, autre menu, trier)`;
 });
 
 await check('Menu de tri + chaque tri', async () => {
+  await click('[data-menu="sort"]');
+  assert(await page.$('#sort-menu .menu'), 'menu de tri non ouvert');
   for (const k of ['hours', 'az', 'pct', 'size', 'recent']) {
-    await click('[data-menu="sort"]');
-    assert(await page.$('#sort-menu .menu'), 'menu de tri non ouvert');
-    await click(`.menu [data-act="sort"][data-v="${k}"]`);
+    await click(`#sort-menu [data-act="sort"][data-v="${k}"]`);
+    const on = await page.$eval(`#sort-menu [data-v="${k}"]`, (e) => e.getAttribute('aria-checked'));
+    assert(on === 'true', `${k} non coché`);
   }
+  await click('#sort-menu [data-act="sortdir"][data-v="asc"]');
+  const asc = await page.$eval('#sort-menu [data-act="sortdir"][data-v="asc"]', (e) => e.getAttribute('aria-checked'));
+  await click('#sort-menu [data-act="sortdir"][data-v="desc"]');
+  assert(asc === 'true', 'ordre croissant non coché');
+  await click('[data-menu="sort"]');
   const first = await page.$$eval('#vgrid .cov .nm', (l) => l.slice(0, 3).map((x) => x.textContent));
   return `OK, en tête (récents) : ${first.join(', ')}`;
 });
@@ -274,6 +281,16 @@ await check('Durée HowLongToBeat', async () => {
   return t.slice(0, 120);
 });
 
+await check('Succès : 9 puis « Afficher plus »', async () => {
+  await click('.tab[data-v="ach"]'); await sleep(1200);
+  const n0 = await count('.achs .ach');
+  const btn = await page.$('[data-act="achmore"]');
+  if (btn) { await click('[data-act="achmore"]'); await sleep(400); }
+  const n1 = await count('.achs .ach');
+  assert(n0 <= 9, `${n0} succès affichés d'emblée`);
+  return btn ? `${n0} → ${n1} après « Show more »` : `${n0} (pas assez pour le bouton)`;
+});
+
 await check('Retour à l\'accueil (Échap)', async () => {
   await page.keyboard.press('Escape'); await sleep(600);
   assert(await page.$('#vgrid'), 'pas revenu à l\'accueil');
@@ -318,7 +335,7 @@ await check('Chiffres cliquables : temps de jeu et succès, ↑/↓', async () =
   await click('[data-act="kpi"][data-v="achn"]'); await sleep(900);
   const ach = await names();
   const sortTxt = await text('[data-menu="sort"]');
-  await click('[data-menu="sort"]'); await click('#sort-menu [data-v="recent"]'); await sleep(400);
+  await click('[data-menu="sort"]'); await click('#sort-menu [data-v="recent"]'); await click('[data-menu="sort"]'); await sleep(400);
   return `temps ↓ ${desc[0]} · ↑ ${asc[0]} · succès ↓ ${ach[0]} · bouton « ${sortTxt} »`;
 });
 
@@ -354,6 +371,17 @@ await check('Jaquettes non installées sans nom par-dessus', async () => {
   assert(r, 'aucun jeu non installé visible');
   assert(+r.op === 1, `image encore transparente (${r.op}) : le nom en dessous transparaît`);
   return `opacité 1, ${r.filter}, nom ${r.nm}`;
+});
+
+await check('Retour depuis une fiche : jaquettes déjà affichées', async () => {
+  await click('#vgrid .cov'); await sleep(1500);
+  await page.keyboard.press('Escape');
+  const r = await page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => {
+    const imgs = [...document.querySelectorAll('#vgrid .cov img')];
+    ok({ n: imgs.length, ready: imgs.filter((i) => i.complete && i.naturalWidth > 0).length });
+  })));
+  assert(r.n > 0 && r.ready === r.n, `${r.ready}/${r.n} jaquettes prêtes à la 1re image`);
+  return `${r.ready}/${r.n} prêtes dès la première image`;
 });
 
 await check('Mémoire', async () => {
