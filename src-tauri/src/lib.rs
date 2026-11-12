@@ -998,8 +998,10 @@ struct UpdateInfo {
     notes: Option<String>,
 }
 
+const DEFAULT_UPDATE_URL: &str = "https://github.com/Desarrh/ultimate/releases/latest/download/latest.json";
+
 fn update_url(st: &AppState) -> Option<String> {
-    user(st).update_url.filter(|u| u.starts_with("https://"))
+    Some(user(st).update_url.filter(|u| u.starts_with("https://")).unwrap_or_else(|| DEFAULT_UPDATE_URL.into()))
 }
 
 #[tauri::command]

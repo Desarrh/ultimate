@@ -773,7 +773,7 @@ function renderModal() {
       <div class="box"><h3>Mises à jour d'Ultimate</h3>
         <span class="muted">Version installée : ${esc(S.version || '?')}. L'appli vérifie au démarrage et propose d'installer en un clic (paquets signés).</span>
         <label for="up-url">Source des mises à jour (latest.json)</label>
-        <input id="up-url" type="text" value="${esc(S.user.updateUrl || '')}" placeholder="https://github.com/TON-COMPTE/ultimate/releases/latest/download/latest.json">
+        <input id="up-url" type="text" value="${esc(S.user.updateUrl || '')}" placeholder="Par défaut : github.com/Desarrh/ultimate (laisser vide)">
         <div class="row2"><button class="btn2" data-act="up-check">Rechercher une mise à jour</button><span class="muted" id="up-state">${S.update ? `Version ${esc(S.update.version)} disponible` : ''}</span>
           ${S.update ? '<button class="btn2 pri" data-act="up-install">Installer et redémarrer</button>' : ''}</div>
       </div>
@@ -1031,7 +1031,7 @@ document.addEventListener('click', async (e) => {
     case 'up-check': {
       commitSettingsText();
       const st = $('#up-state'); st.textContent = 'Recherche…';
-      try { S.update = await invoke('check_update'); st.textContent = S.update ? `Version ${S.update.version} disponible` : (S.user.updateUrl ? 'Ultimate est à jour.' : 'Renseigne d\'abord la source.'); renderModal(); renderUpdPill(); }
+      try { S.update = await invoke('check_update'); st.textContent = S.update ? `Version ${S.update.version} disponible` : 'Ultimate est à jour.'; renderModal(); renderUpdPill(); }
       catch (err) { st.textContent = String(err); }
       return;
     }
