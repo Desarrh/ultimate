@@ -159,6 +159,11 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
             }
         }
     }
+    // Valve's Steamworks test app (used by GodotSteam and dev builds): not a real game
+    for g in scanned.iter_mut().filter(|g| g.steam_appid == Some(480)) {
+        g.name = "Spacewar (test Steamworks)".into();
+        g.tags = vec!["Logiciel".into()];
+    }
     // playtime outside Steam: Epic's own counter (if connected), else what this app measured
     let epic_pt = accounts::epic_playtime(&http).await.unwrap_or_default();
     {
