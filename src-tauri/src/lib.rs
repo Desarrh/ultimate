@@ -502,6 +502,27 @@ fn set_memo(st: State<AppState>, id: String, text: String) {
     save(&st.dir.join("memos.json"), &*m);
 }
 
+#[tauri::command]
+fn set_wallpaper(st: State<AppState>, data_url: String) -> Result<(), String> {
+    let p = st.dir.join("wallpaper.txt");
+    if data_url.is_empty() {
+        let _ = fs::remove_file(p);
+        return Ok(());
+    }
+    if !data_url.starts_with("data:image/") {
+        return Err("Ce fichier n'est pas une image.".into());
+    }
+    if data_url.len() > 40_000_000 {
+        return Err("Image trop lourde (30 Mo max).".into());
+    }
+    fs::write(p, data_url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_wallpaper(st: State<AppState>) -> Option<String> {
+    fs::read_to_string(st.dir.join("wallpaper.txt")).ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -525,7 +546,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }

@@ -7,13 +7,16 @@ const S = {
   tab: 'ach', achF: 'all', openNews: 0, menu: null, showSoft: false, busy: false, modal: false, homeY: 0,
 };
 const $ = (s) => document.querySelector(s);
+const P = (() => { try { return { wp: 'auto', wpGame: '', wpBlur: 0, wpDim: 45, ...JSON.parse(localStorage.getItem('prefs') || '{}') }; } catch { return { wp: 'auto', wpGame: '', wpBlur: 0, wpDim: 45 }; } })();
+const savePrefs = () => { try { localStorage.setItem('prefs', JSON.stringify(P)); } catch { /* ignore */ } };
+let wpData = null;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const SRC = { steam: 'Steam', epic: 'Epic', gog: 'GOG' };
 const CAT = {
   Tout: '#FF6B9A', Installés: '#6EE7A8', 'Avec mémo': '#FFD45C', Survie: '#3EE6A8', 'Souls-like': '#FF6B6B', Roguelite: '#FF9F43',
   Metroidvania: '#A78BFA', Horreur: '#FF5C7A', Coop: '#4CBCE6', Multijoueur: '#5B9DFF', Solo: '#F5C84C', RPG: '#F5B84C', Chill: '#C97CF0',
   Incrémental: '#7CE0F0', Puzzle: '#7BC74D', Plateformes: '#FFB86B', 'Monde ouvert': '#34D399', Construction: '#F59E0B', Stratégie: '#60A5FA',
-  Simulation: '#2DD4BF', Tir: '#F87171', Course: '#FB923C', Rythme: '#E879F9', Aventure: '#FBBF24', Action: '#FB7185', Démo: '#94A3B8', Logiciel: '#94A3B8',
+  Simulation: '#2DD4BF', Tir: '#F87171', Course: '#FB923C', Rythme: '#E879F9', Aventure: '#FBBF24', Action: '#FB7185', Démo: '#94A3B8', Logiciel: '#7C9CFF',
 };
 const catColor = (c) => CAT[c] || '#B8C2D6';
 const fmtH = (m) => {
@@ -45,7 +48,8 @@ const icon = {
 
 const cur = () => S.games.find((g) => g.id === S.sel) || null;
 const isSoft = (g) => g.tags.includes('Logiciel');
-const games = () => S.games.filter((g) => !isSoft(g) || S.showSoft);
+const games = () => S.games.filter((g) => !isSoft(g) || S.showSoft || S.col === 'Logiciel');
+const lbl = (c) => (c === 'Logiciel' ? 'Apps' : c);
 const pct = (id) => { const s = S.achsum[id]; return s && s[1] ? Math.round((s[0] / s[1]) * 100) : null; };
 
 function toast(msg) {
@@ -66,9 +70,13 @@ function theme(a, d) {
   r.setProperty('--a', a || '#B8C2D6');
   r.setProperty('--d', d || hexDeep(a));
 }
-function setBg(src, blur) {
+function setBg(src, blur, custom) {
   const img = $('#bg-img');
-  img.classList.toggle('blur', !!blur);
+  document.body.classList.toggle('wp', !!custom);
+  img.classList.toggle('blur', !!blur && !custom);
+  img.style.filter = custom ? `blur(${P.wpBlur}px)` : '';
+  img.style.transform = custom && P.wpBlur ? 'scale(1.06)' : '';
+  document.documentElement.style.setProperty('--dim', String(P.wpDim / 100));
   if (img.dataset.src === (src || '')) return;
   img.dataset.src = src || '';
   if (!src) { img.removeAttribute('src'); return; }
@@ -117,14 +125,15 @@ function collections() {
   const base = games().filter((g) => S.src === 'all' || g.source === S.src);
   const counts = {};
   base.forEach((g) => g.tags.forEach((t) => (counts[t] = (counts[t] || 0) + 1)));
+  const soft = S.games.filter((g) => isSoft(g) && (S.src === 'all' || g.source === S.src));
   const list = ['Tout', 'Installés'];
+  if (soft.length) list.push('Logiciel');
   if (base.some((g) => S.memos[g.id])) list.push('Avec mémo');
   Object.entries(counts).filter(([t, n]) => n >= 2 && t !== 'Logiciel' && t !== 'Démo').sort((a, b) => b[1] - a[1]).slice(0, 14).forEach(([t]) => list.push(t));
   if (counts['Démo']) list.push('Démo');
-  if (S.showSoft && counts.Logiciel) list.push('Logiciel');
   const byRecent = [...base].sort((a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin);
   return list.map((c) => {
-    const inside = byRecent.filter((g) => inCol(g, c));
+    const inside = c === 'Logiciel' ? soft.sort((a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin) : byRecent.filter((g) => inCol(g, c));
     const art = inside.filter((g) => g.cover).slice(0, 3);
     return { c, n: inside.length, art };
   });
@@ -155,7 +164,10 @@ function renderHome() {
   const last = [...all].filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed)[0];
   const col = S.col;
   theme(catColor(col));
-  setBg(last?.hero || last?.cover, !last?.hero || true);
+  const wpG = P.wp === 'game' && S.games.find((x) => x.id === P.wpGame);
+  if (P.wp === 'file' && wpData) setBg(wpData, false, true);
+  else if (wpG) setBg(wpG.hero || wpG.cover, false, true);
+  else setBg(last?.hero || last?.cover, true);
   const cols = collections();
   const list = filtered();
   const shown = list.slice(0, S.limit);
@@ -199,14 +211,14 @@ function renderHome() {
             ${x.art[2] ? `<img class="f3" src="${esc(x.art[2].cover)}" alt="" loading="lazy">` : ''}
             ${x.art[0] ? `<img class="f2" src="${esc(x.art[0].cover)}" alt="" loading="lazy">` : ''}
           </span>
-          <span class="lbl"><b>${esc(x.c)}</b><span>${x.n}</span></span>
+          <span class="lbl"><b>${esc(lbl(x.c))}</b><span>${x.n}</span></span>
         </button>`).join('')}
       </div>
     </section>
 
     <section class="lib" id="lib">
       <div class="sec-head">
-        <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(col)}</h2><span class="muted">${list.length} jeu${list.length > 1 ? 'x' : ''}${S.q ? ` pour « ${esc(S.q)} »` : ''}</span></div>
+        <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(lbl(col))}</h2><span class="muted">${list.length} jeu${list.length > 1 ? 'x' : ''}${S.q ? ` pour « ${esc(S.q)} »` : ''}</span></div>
         <div class="anchor">
           <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
@@ -328,7 +340,7 @@ function renderGame() {
           ${title}
           <div class="tags">
             <span class="tag glass">${SRC[g.source]}</span>
-            ${g.tags.slice(0, 5).map((t) => `<button class="tag glass" data-act="gocol" data-v="${esc(t)}" style="color:${catColor(t)}">${esc(t)}</button>`).join('')}
+            ${g.tags.slice(0, 5).map((t) => `<button class="tag glass" data-act="gocol" data-v="${esc(t)}" style="color:${catColor(t)}">${esc(lbl(t))}</button>`).join('')}
           </div>
           <div class="btns">
             <button class="play" data-act="play">${g.installed ? icon.play + 'Jouer' : icon.dl + 'Installer'}</button>
@@ -358,7 +370,7 @@ function renderGame() {
         ${body}
       </div>
     </section>
-    ${similar.length ? `<section class="similar"><div class="sec-head"><div><h2>Aussi en ${esc(g.tags[0])}</h2></div><button class="alink" data-act="gocol" data-v="${esc(g.tags[0])}">Voir la collection →</button></div>
+    ${similar.length ? `<section class="similar"><div class="sec-head"><div><h2>Aussi dans ${esc(lbl(g.tags[0]))}</h2></div><button class="alink" data-act="gocol" data-v="${esc(g.tags[0])}">Voir la collection →</button></div>
       <div class="grid row">${similar.map(cover).join('')}</div></section>` : ''}`;
 }
 
@@ -420,6 +432,23 @@ function renderModal() {
           <div class="row2"><input id="epic-code" type="password" autocomplete="off" spellcheck="false" placeholder="authorizationCode" style="flex:1">
             <button class="btn2 pri" data-act="epic-save">Valider</button></div>`}
         <span class="err" id="epic-err"></span>
+      </div>
+      <div class="box">
+        <h3>Fond d'écran de la bibliothèque</h3>
+        <div class="fseg glass" role="radiogroup" aria-label="Type de fond" style="align-self:flex-start">
+          ${[['auto', 'Automatique'], ['file', 'Image de mon PC'], ['game', "Bannière d'un jeu"]].map(([k, l]) => `<button role="radio" data-act="wp-mode" data-v="${k}" aria-pressed="${P.wp === k}" aria-checked="${P.wp === k}">${l}</button>`).join('')}
+        </div>
+        ${P.wp === 'auto' ? "<span class=\"muted\">L'ambiance suit ton dernier jeu et la couleur de la collection choisie.</span>" : ''}
+        ${P.wp === 'file' ? `<div class="row2"><label class="btn2" for="wp-file" style="display:flex;align-items:center;cursor:pointer">Choisir une image…</label>
+          <input id="wp-file" type="file" accept="image/*" class="sr"><span class="muted">${wpData ? 'Image enregistrée' : 'Aucune image'}</span>
+          ${wpData ? '<button class="btn2" data-act="wp-clear">Retirer</button>' : ''}</div>` : ''}
+        ${P.wp === 'game' ? `<label for="wp-game">Jeu</label><select id="wp-game" class="sel">
+          <option value="">Choisis un jeu…</option>
+          ${S.games.filter((x) => x.hero).sort((x, y) => x.name.localeCompare(y.name, 'fr')).map((x) => `<option value="${esc(x.id)}" ${x.id === P.wpGame ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+        </select>` : ''}
+        ${P.wp !== 'auto' ? `<label for="wp-blur">Flou : <span id="wp-blur-v">${P.wpBlur}</span> px</label><input id="wp-blur" class="range" type="range" min="0" max="40" value="${P.wpBlur}">
+          <label for="wp-dim">Assombrir : <span id="wp-dim-v">${P.wpDim}</span> %</label><input id="wp-dim" class="range" type="range" min="0" max="85" value="${P.wpDim}">` : ''}
+        <span class="err" id="wp-err"></span>
       </div>
       <span class="muted" style="font-size:12px">Les clés et jetons sont stockés dans le Gestionnaire d'identification de Windows, jamais dans un fichier.</span>
     </div></div>`;
@@ -521,6 +550,8 @@ document.addEventListener('click', async (e) => {
       catch (err) { $('#epic-err').textContent = String(err); }
       return;
     }
+    case 'wp-mode': P.wp = v; savePrefs(); renderModal(); if (S.view === 'home') renderHome(); return;
+    case 'wp-clear': await invoke('set_wallpaper', { dataUrl: '' }); wpData = null; renderModal(); if (S.view === 'home') renderHome(); return;
     case 'epic-off': await invoke('epic_disconnect'); await loadAccounts(); renderModal(); return;
   }
   if (S.menu) { S.menu = null; render(); }
@@ -533,6 +564,23 @@ document.addEventListener('keydown', (e) => {
     if (S.modal) { S.modal = false; renderModal(); } else if (S.menu) { S.menu = null; render(); } else if (S.view === 'game') goHome();
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement?.id === 'memo-ta') saveMemo();
+});
+document.addEventListener('input', (e) => {
+  const id = e.target.id;
+  if (id === 'wp-blur' || id === 'wp-dim') {
+    P[id === 'wp-blur' ? 'wpBlur' : 'wpDim'] = +e.target.value; savePrefs();
+    $(`#${id}-v`).textContent = e.target.value;
+    if (S.view === 'home') renderHome();
+  }
+});
+document.addEventListener('change', async (e) => {
+  if (e.target.id === 'wp-game') { P.wpGame = e.target.value; savePrefs(); if (S.view === 'home') renderHome(); }
+  if (e.target.id === 'wp-file' && e.target.files[0]) {
+    const f = e.target.files[0];
+    const url = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(f); });
+    try { await invoke('set_wallpaper', { dataUrl: url }); wpData = url; renderModal(); if (S.view === 'home') renderHome(); toast("Fond d'écran enregistré"); }
+    catch (err) { $('#wp-err').textContent = String(err); }
+  }
 });
 document.addEventListener('input', (e) => { if (e.target.id === 'memo-ta') $('#memo-state').textContent = 'Non enregistré · Ctrl+Entrée pour enregistrer'; });
 
@@ -549,6 +597,7 @@ function onLibrary(list) {
 (async () => {
   const [lib, memos, achsum] = await Promise.all([invoke('get_cached'), invoke('get_memos'), invoke('get_achsum')]);
   S.memos = memos; S.achsum = achsum; S.games = lib;
+  try { wpData = await invoke('get_wallpaper'); } catch { /* none */ }
   render();
   await listen('library', (e) => onLibrary(e.payload));
   await listen('achsum', (e) => { S.achsum = e.payload; if (S.view === 'home') onLibrary(S.games); });

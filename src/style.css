@@ -243,3 +243,11 @@ main { position: relative; z-index: 2; }
   .resume { margin-left: 28px; margin-right: 28px; width: calc(100% - 56px); }
   .ghero .body { left: 28px; right: 28px; }
 }
+
+/* custom wallpaper */
+body.wp .bg { position: fixed; inset: 0; height: 100vh; }
+body.wp .bg-fade { background: linear-gradient(0deg, rgba(0,0,0,calc(var(--dim, .45) + .15)) 0%, rgba(0,0,0,var(--dim, .45)) 100%),
+  radial-gradient(55% 80% at 10% 0%, color-mix(in srgb, var(--a) 25%, transparent) 0%, transparent 70%); }
+body.wp #bg-img { opacity: 1; }
+.sel { height: 46px; border-radius: 12px; border: 1px solid rgba(255,255,255,.18); background: #15151b; color: #fff; padding: 0 12px; font: inherit; font-size: 14px; }
+.range { accent-color: var(--a); width: 100%; height: 24px !important; padding: 0 !important; border: 0 !important; background: transparent !important; }
