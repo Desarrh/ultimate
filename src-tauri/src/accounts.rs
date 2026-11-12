@@ -52,7 +52,7 @@ async fn json_get(c: &Client, url: &str) -> Option<Value> {
 }
 
 /// Owned games with real playtime (includes never-played ones). appid -> (name, minutes, last played)
-pub async fn steam_owned(c: &Client, key: &str, sid: u64) -> Option<HashMap<u32, (String, u64, u64)>> {
+pub async fn steam_owned(c: &Client, key: &str, sid: u64) -> Option<HashMap<u32, (String, u64, u64, u64)>> {
     let url = format!("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key={key}&steamid={sid}&include_appinfo=1&include_played_free_games=1&format=json");
     let j = json_get(c, &url).await?;
     let games = j.pointer("/response/games")?.as_array()?;
@@ -61,6 +61,7 @@ pub async fn steam_owned(c: &Client, key: &str, sid: u64) -> Option<HashMap<u32,
             g.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             g.get("playtime_forever").and_then(|v| v.as_u64()).unwrap_or(0),
             g.get("rtime_last_played").and_then(|v| v.as_u64()).unwrap_or(0),
+            g.get("playtime_2weeks").and_then(|v| v.as_u64()).unwrap_or(0),
         )))
     }).collect())
 }

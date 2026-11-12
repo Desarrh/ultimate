@@ -15,7 +15,7 @@ pub fn scan_all() -> Vec<Game> {
 
 const STEAM_SKIP: &[u32] = &[228980, 1070560, 1391110, 1628350, 1493710, 2180100, 1161040, 1826330, 1887720, 2348590, 961940, 1420170];
 
-fn steam_root() -> Option<PathBuf> {
+pub fn steam_root() -> Option<PathBuf> {
     let hk = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok(k) = hk.open_subkey("Software\\Valve\\Steam") {
         if let Ok(p) = k.get_value::<String, _>("SteamPath") {
@@ -42,6 +42,11 @@ fn active_localconfig(root: &PathBuf) -> Option<(u64, PathBuf)> {
         })
         .max_by_key(|(t, _, _)| *t)
         .map(|(_, id, p)| (id, p))
+}
+
+/// Account id (userdata folder) of the active local account.
+pub fn steam_account() -> Option<u64> {
+    active_localconfig(&steam_root()?).map(|(id, _)| id)
 }
 
 /// SteamID64 of the active local account.
@@ -116,6 +121,7 @@ fn steam() -> Vec<Game> {
                 last_played: lp.max(st.num("LastPlayed")),
                 size: st.num("SizeOnDisk"),
                 installed: true,
+                update: st.num("StateFlags") & 2 != 0 || st.num("BytesToDownload") > st.num("BytesDownloaded"),
                 ..Default::default()
             });
         }
