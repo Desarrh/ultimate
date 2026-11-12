@@ -114,3 +114,37 @@ fn shrink(raw: Vec<u8>, w: u32) -> (Vec<u8>, bool) {
         (buf.into_inner(), false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn decodes_query() {
+        let (p, q) = query("http://img.localhost/t?w=300&u=https%3A%2F%2Fcdn.x%2Fa%20b.jpg%3Fh%3D1");
+        assert_eq!(p, "t");
+        assert_eq!(q["w"], "300");
+        assert_eq!(q["u"], "https://cdn.x/a b.jpg?h=1");
+        assert_eq!(pct_decode("%E2%9C%93ok%"), "✓ok%");
+    }
+    fn jpeg(w: u32, h: u32) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb([10, 200, 30]))).write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+        buf.into_inner()
+    }
+    #[test]
+    fn shrinks_but_never_upscales() {
+        let (b, png) = shrink(jpeg(1200, 1800), 300);
+        let i = image::load_from_memory(&b).unwrap();
+        assert_eq!((i.width(), i.height(), png), (300, 450, false));
+        let small = jpeg(200, 300);
+        let (b2, _) = shrink(small.clone(), 300);
+        assert_eq!(b2, small, "smaller image must be served untouched");
+    }
+    #[test]
+    fn keeps_transparency_as_png() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(800, 200, image::Rgba([0, 0, 0, 0]))).write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        let (_, png) = shrink(buf.into_inner(), 400);
+        assert!(png);
+    }
+}

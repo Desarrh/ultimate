@@ -203,6 +203,15 @@ fn epic_img(item: &serde_json::Value, kind: &str, q: &str) -> Option<String> {
         .map(|u| format!("{u}{q}"))
 }
 
+/// An Epic catalog item that belongs to another game (its `mainGameItem` points elsewhere).
+pub fn is_addon(item: &serde_json::Value) -> bool {
+    let own = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    match item.pointer("/mainGameItem/id").and_then(|v| v.as_str()) {
+        Some(main) => !main.is_empty() && main != own,
+        None => false,
+    }
+}
+
 /// Owned library from the launcher's local catalog cache (base64 JSON).
 fn epic_owned(base: &str, out: &mut Vec<Game>) {
     use base64::Engine;
@@ -221,6 +230,9 @@ fn epic_owned(base: &str, out: &mut Vec<Game>) {
         let tl = title.to_lowercase();
         if title.is_empty() || tl.contains("test branch") || tl.contains("(beta)") {
             continue;
+        }
+        if is_addon(it) {
+            continue; // DLC / HD pack / expansion of another game
         }
         let Some(app) = it.pointer("/releaseInfo/0/appId").and_then(|v| v.as_str()) else { continue };
         let ns = it.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
@@ -278,4 +290,20 @@ fn gog() -> Vec<Game> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn epic_addons_are_detected() {
+        let base = serde_json::json!({ "id": "aaa", "mainGameItem": { "id": "", "namespace": "n" } });
+        let dlc = serde_json::json!({ "id": "bbb", "mainGameItem": { "id": "aaa", "namespace": "n" } });
+        let selfref = serde_json::json!({ "id": "ccc", "mainGameItem": { "id": "ccc" } });
+        let none = serde_json::json!({ "id": "ddd" });
+        assert!(!is_addon(&base));
+        assert!(is_addon(&dlc));
+        assert!(!is_addon(&selfref));
+        assert!(!is_addon(&none));
+    }
 }

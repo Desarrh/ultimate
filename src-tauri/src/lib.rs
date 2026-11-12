@@ -137,6 +137,9 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
             for (id, (name, pt, lp, rc)) in owned {
                 match scanned.iter_mut().find(|g| g.steam_appid == Some(id)) {
                     Some(g) => {
+                        if g.name.starts_with("Jeu Steam ") && !name.is_empty() {
+                            g.name = name.clone();
+                        }
                         g.playtime_min = g.playtime_min.max(pt);
                         g.last_played = g.last_played.max(lp);
                         g.recent_min = rc;
@@ -165,6 +168,21 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
                     keep_meta(g, o);
                 }
                 g.last_played = g.last_played.max(o.last_played);
+            }
+        }
+    }
+    // two Steam apps with the same name: the one without a store page is a companion app (tool, server, test build)
+    {
+        let key = |n: &str| n.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, g) in scanned.iter().enumerate().filter(|(_, g)| g.source == "steam" && !g.name.starts_with("Jeu Steam ")) {
+            groups.entry(key(&g.name)).or_default().push(i);
+        }
+        for idx in groups.values().filter(|v| v.len() > 1) {
+            let main = *idx.iter().max_by_key(|&&i| (scanned[i].cover.is_some(), scanned[i].tags.len(), scanned[i].playtime_min)).unwrap();
+            let extras: Vec<usize> = idx.iter().copied().filter(|&i| i != main && scanned[i].cover.is_none()).collect();
+            for i in extras {
+                scanned[i].tags = vec!["Extra".into()];
             }
         }
     }
@@ -243,6 +261,37 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
         }
     }
     emit(app);
+
+    // 2b. still unnamed (delisted apps, playtests): ask the community hub
+    let unnamed: Vec<(String, u32)> = st.lib.lock().unwrap().iter().filter(|g| g.name.starts_with("Jeu Steam ")).filter_map(|g| Some((g.id.clone(), g.steam_appid?))).collect();
+    let mut s = futures::stream::iter(unnamed.into_iter().map(|(id, a)| {
+        let c = http.clone();
+        async move { (id, meta::community_name(&c, a).await) }
+    }))
+    .buffer_unordered(4);
+    while let Some((id, n)) = s.next().await {
+        if let Some(n) = n {
+            if let Some(g) = st.lib.lock().unwrap().iter_mut().find(|g| g.id == id) {
+                if meta::is_test_name(&n) && !g.tags.iter().any(|t| t == "Démo") {
+                    g.tags.insert(0, "Démo".into());
+                }
+                g.name = n;
+            }
+        }
+    }
+    drop(s);
+    // no store page and no community name: delisted app or private playtest
+    for g in st.lib.lock().unwrap().iter_mut().filter(|g| g.name.starts_with("Jeu Steam ") && !g.tags.iter().any(|t| t == "Démo")) {
+        g.tags = vec!["Démo".into()];
+    }
+    // tools by name (editors, servers…)
+    for g in st.lib.lock().unwrap().iter_mut().filter(|g| !g.enriched && meta::is_tool_name(&g.name)) {
+        g.tags = vec!["Logiciel".into()];
+    }
+    // Epic / GOG: demos and betas by name
+    for g in st.lib.lock().unwrap().iter_mut().filter(|g| !g.enriched && meta::is_test_name(&g.name) && !g.tags.iter().any(|t| t == "Démo")) {
+        g.tags.insert(0, "Démo".into());
+    }
 
     // 3. accent colour from each cover
     let covers: Vec<(String, String)> = st.lib.lock().unwrap().iter().filter(|g| !g.enriched).filter_map(|g| Some((g.id.clone(), g.cover.clone()?))).collect();
@@ -903,4 +952,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ymd_dates() {
+        assert_eq!(super::ymd(0), "1970-01-01");
+        assert_eq!(super::ymd(1710432249), "2024-03-14");
+        assert_eq!(super::ymd(951782400), "2000-02-29");
+    }
 }

@@ -199,3 +199,32 @@ pub fn backup(manifest: &Path, backup_dir: &Path, name: &str, appid: Option<u32>
     }
     Ok((n, dest))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const MANIFEST: &str = "Valheim:\n  files:\n    <home>/AppData/LocalLow/IronGate/Valheim/worlds_local:\n      tags:\n        - save\n      when:\n        - os: windows\n    <home>/.config/unity3d/IronGate/Valheim:\n      when:\n        - os: linux\n  steam:\n    id: 892970\n\"Some: Game\":\n  files:\n    <winDocuments>/My Games/Some:\n      tags:\n        - save\n";
+    fn write() -> PathBuf {
+        let p = std::env::temp_dir().join(format!("launcher-test-manifest-{}.yaml", std::process::id()));
+        fs::write(&p, MANIFEST).unwrap();
+        p
+    }
+    #[test]
+    fn finds_windows_paths_by_steam_id_and_name() {
+        let m = write();
+        let by_id = patterns(&m, "nom différent", Some(892970));
+        assert_eq!(by_id, vec!["<home>/AppData/LocalLow/IronGate/Valheim/worlds_local".to_string()]);
+        let by_name = patterns(&m, "Some Game", None);
+        assert_eq!(by_name, vec!["<winDocuments>/My Games/Some".to_string()]);
+        assert!(patterns(&m, "Inconnu", Some(1)).is_empty());
+        let _ = fs::remove_file(m);
+    }
+    #[test]
+    fn expands_placeholders() {
+        let p = expand("<home>/AppData/<storeUserId>/x", None, None).unwrap();
+        assert!(p.ends_with("\\AppData\\*\\x"), "{p}");
+        assert!(expand("<base>/saves", None, None).is_none(), "needs install dir");
+        assert_eq!(expand("<base>/saves", Some("D:\\Games\\Foo"), None).as_deref(), Some("D:\\Games\\Foo\\saves"));
+        assert!(expand("<xdgConfig>/x", None, None).is_none());
+    }
+}

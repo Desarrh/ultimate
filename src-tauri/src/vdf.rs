@@ -124,3 +124,18 @@ fn parse_obj(t: &[Tok], i: &mut usize) -> Vec<(String, Vdf)> {
     }
     v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_nested_escaped_and_comments() {
+        let src = "// comment\n\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"C:\\\\Program Files (x86)\\\\Steam\"\n\t\t\"apps\" { \"892970\" \"4542664874\" }\n\t}\n\tunquoted value\n}";
+        let v = parse(src);
+        let lf = v.get("LIBRARYFOLDERS").expect("case-insensitive");
+        assert_eq!(lf.path(&["0"]).unwrap().str("path"), Some("C:\\Program Files (x86)\\Steam"));
+        assert_eq!(lf.path(&["0", "apps"]).unwrap().num("892970"), 4542664874);
+        assert_eq!(lf.str("unquoted"), Some("value"));
+        assert_eq!(lf.num("missing"), 0);
+    }
+}

@@ -128,14 +128,17 @@ async fn epic_token(c: &Client, form: &[(&str, &str)]) -> Result<String, String>
 }
 
 /// Accepts the bare code or the whole JSON page the user copied.
-pub async fn epic_connect(c: &Client, input: &str) -> Result<String, String> {
+pub fn auth_code(input: &str) -> Option<String> {
     let code = match serde_json::from_str::<Value>(input.trim()) {
+        Ok(Value::String(s)) => s,
         Ok(j) => j.get("authorizationCode").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         Err(_) => input.trim().trim_matches('"').to_string(),
     };
-    if code.len() < 16 {
-        return Err("Code invalide : copie la valeur « authorizationCode ».".into());
-    }
+    (code.len() >= 16 && code.chars().all(|c| c.is_ascii_alphanumeric())).then_some(code)
+}
+
+pub async fn epic_connect(c: &Client, input: &str) -> Result<String, String> {
+    let code = auth_code(input).ok_or("Code invalide : copie la valeur « authorizationCode ».")?;
     epic_token(c, &[("grant_type", "authorization_code"), ("code", &code), ("token_type", "eg1")]).await
 }
 
@@ -233,4 +236,23 @@ fn iso_to_unix(s: &str) -> u64 {
     let (y2, m2) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
     let days = 365 * y2 + y2 / 4 - y2 / 100 + y2 / 400 + (153 * m2 + 2) / 5 + d - 719469;
     (days * 86400 + n(11, 13) * 3600 + n(14, 16) * 60 + n(17, 19)).max(0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn iso_dates() {
+        assert_eq!(iso_to_unix("1970-01-01T00:00:00.000Z"), 0);
+        assert_eq!(iso_to_unix("2024-03-14T16:04:09.948Z"), 1710432249);
+        assert_eq!(iso_to_unix(""), 0);
+    }
+    #[test]
+    fn epic_code_from_page_or_bare() {
+        let json = r#"{"redirectUrl":"https://x","authorizationCode":"0123456789abcdef0123456789abcdef","sid":null}"#;
+        assert_eq!(auth_code(json).as_deref(), Some("0123456789abcdef0123456789abcdef"));
+        assert_eq!(auth_code("  \"0123456789abcdef0123456789abcdef\" ").as_deref(), Some("0123456789abcdef0123456789abcdef"));
+        assert_eq!(auth_code("trop court"), None);
+        assert_eq!(auth_code(r#"{"authorizationCode":null}"#), None);
+    }
 }

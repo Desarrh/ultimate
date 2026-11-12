@@ -29,13 +29,13 @@ const CAT = {
 const PALETTE = ['#FF6B9A', '#5B9DFF', '#3EE6A8', '#FFB020', '#C97CF0', '#FF6B6B', '#2DD4BF', '#F5C84C'];
 const isCustom = (c) => c.startsWith('c:');
 const catColor = (c) => (isCustom(c) ? (S.user.collections.find((x) => 'c:' + x.name === c)?.color || '#FF6B9A') : CAT[c] || '#B8C2D6');
-const lbl = (c) => (c === 'Logiciel' ? 'Apps' : isCustom(c) ? c.slice(2) : c);
+const lbl = (c) => (c === 'Logiciel' ? 'Apps' : c === 'Démo' ? 'Démos & tests' : isCustom(c) ? c.slice(2) : c);
 
 // ---------- images: resized on the Rust side to the displayed size ----------
 const IMG = 'http://img.localhost/';
 const dpr = () => window.devicePixelRatio || 1;
 const TW = () => (dpr() > 1.3 ? 440 : 300);
-const bgW = () => [1280, 1920, 2560, 3840].find((w) => w >= innerWidth * dpr()) || 3840;
+const bgW = () => [1280, 1600, 1920, 2560, 3840].find((w) => w >= innerWidth * dpr()) || 3840;
 const th = (u, w) => (u ? `${IMG}t?w=${w}&u=${encodeURIComponent(u)}` : '');
 const loc = (p, w) => (p ? `${IMG}f?w=${w}&p=${encodeURIComponent(p)}` : '');
 const coverSrc = (g) => th(g.cover, TW());
@@ -72,9 +72,13 @@ const icon = {
 
 const cur = () => S.games.find((g) => g.id === S.sel) || null;
 const isSoft = (g) => g.tags.includes('Logiciel');
+const isDemo = (g) => g.tags.includes('Démo');
+const isExtra = (g) => g.tags.includes('Extra');
+/** a real game: not an app, demo/playtest, DLC/soundtrack, nor hidden */
+const isGame = (g) => !isSoft(g) && !isDemo(g) && !isExtra(g) && !isHidden(g);
 const isHidden = (g) => S.user.hidden.includes(g.id);
 const isFav = (g) => S.user.favorites.includes(g.id);
-const visible = () => S.games.filter((g) => (S.col === 'Masqués' ? isHidden(g) : !isHidden(g)) && (!isSoft(g) || S.showSoft || S.col === 'Logiciel'));
+const visible = () => S.games.filter((g) => !isExtra(g) && (S.col === 'Masqués' ? isHidden(g) : !isHidden(g)) && (!isSoft(g) || S.showSoft || S.col === 'Logiciel') && (!isDemo(g) || S.col === 'Démo' || S.col === 'Masqués'));
 const pct = (id) => { const s = S.achsum[id]; return s && s[1] ? Math.round((s[0] / s[1]) * 100) : null; };
 const saveUser = () => invoke('set_user', { u: S.user }).catch((e) => toast(String(e)));
 
@@ -115,7 +119,7 @@ const bgSrc = (g, blur) => th(g?.hero || g?.cover, blur ? 960 : bgW());
 // ---------- shared pieces ----------
 
 function renderTop() {
-  const base = S.games.filter((g) => !isSoft(g) && !isHidden(g));
+  const base = S.games.filter(isGame);
   const counts = { all: base.length };
   for (const k of Object.keys(SRC)) counts[k] = base.filter((g) => g.source === k).length;
   const items = [['all', 'Tout']].concat(Object.entries(SRC).filter(([k]) => counts[k] > 0));
@@ -188,8 +192,8 @@ function inCol(g, c) {
 }
 
 function collections() {
-  const pool = S.games.filter((g) => !isHidden(g) && (S.src === 'all' || g.source === S.src));
-  const base = pool.filter((g) => !isSoft(g) || S.showSoft);
+  const pool = S.games.filter((g) => !isHidden(g) && !isExtra(g) && (S.src === 'all' || g.source === S.src));
+  const base = pool.filter((g) => (!isSoft(g) || S.showSoft) && !isDemo(g));
   const counts = {};
   base.forEach((g) => g.tags.forEach((t) => (counts[t] = (counts[t] || 0) + 1)));
   const list = ['Tout'];
@@ -200,11 +204,11 @@ function collections() {
   if (pool.some(isSoft)) list.push('Logiciel');
   if (pool.some((g) => S.memos[g.id])) list.push('Avec mémo');
   Object.entries(counts).filter(([t, n]) => n >= 2 && t !== 'Logiciel' && t !== 'Démo').sort((a, b) => b[1] - a[1]).slice(0, 14).forEach(([t]) => list.push(t));
-  if (counts['Démo']) list.push('Démo');
+  if (pool.some(isDemo)) list.push('Démo');
   if (S.user.hidden.length) list.push('Masqués');
   const rank = (a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin;
   return list.map((c) => {
-    const src = c === 'Logiciel' ? pool.filter(isSoft) : c === 'Masqués' ? S.games.filter(isHidden) : base;
+    const src = c === 'Logiciel' ? pool.filter(isSoft) : c === 'Démo' ? pool.filter(isDemo) : c === 'Masqués' ? S.games.filter(isHidden) : base;
     const inside = src.filter((g) => inCol(g, c)).sort(rank);
     return { c, n: inside.length, art: inside.filter((g) => g.cover).slice(0, 3) };
   });
@@ -253,7 +257,7 @@ function dealsRow() {
 }
 
 function renderHome() {
-  const all = S.games.filter((g) => !isSoft(g) && !isHidden(g));
+  const all = S.games.filter(isGame);
   const total = all.reduce((s, g) => s + g.playtimeMin, 0);
   const bySrc = Object.keys(SRC).map((k) => [k, all.filter((g) => g.source === k).reduce((s, g) => s + g.playtimeMin, 0)]).filter(([, v]) => v > 0);
   const sums = Object.entries(S.achsum).filter(([id]) => all.some((g) => g.id === id)).map(([, v]) => v);
@@ -521,7 +525,7 @@ function renderGame() {
 function renderStats() {
   theme('#7C9CFF');
   setBg('', true);
-  const all = S.games.filter((g) => !isSoft(g) && !isHidden(g));
+  const all = S.games.filter(isGame);
   const played = all.filter((g) => g.playtimeMin > 0);
   const total = played.reduce((s, g) => s + g.playtimeMin, 0);
   const recent = all.reduce((s, g) => s + (g.recentMin || 0), 0);

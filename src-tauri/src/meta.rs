@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
 
-pub const META_V: u32 = 3;
+pub const META_V: u32 = 5;
 const ASSETS: &str = "https://shared.akamai.steamstatic.com/store_item_assets/";
 
 pub fn client() -> Client {
@@ -37,11 +37,29 @@ pub async fn search_steam(c: &Client, name: &str) -> Option<u32> {
         .get("https://store.steampowered.com/api/storesearch/")
         .query(&[("term", clean.trim()), ("l", "french"), ("cc", "FR")])
         .send().await.ok()?.json::<Value>().await.ok()?;
-    let want = norm(&clean);
-    r.get("items")?.as_array()?.iter().find_map(|it| {
-        let n = norm(it.get("name")?.as_str()?);
-        (n == want || (want.len() > 5 && (n.starts_with(&want) || want.starts_with(&n)))).then(|| it.get("id")?.as_u64().map(|x| x as u32)).flatten()
-    })
+    let items: Vec<(String, String, u32)> = r.get("items")?.as_array()?.iter().filter_map(|it| {
+        let name = it.get("name")?.as_str()?.to_string();
+        Some((norm(&name), name, it.get("id")?.as_u64()? as u32))
+    }).collect();
+    best_match(&clean, &items)
+}
+
+/// Exact name first; a longer store name only if the extra words are an edition, never a soundtrack/DLC/demo.
+pub fn best_match(wanted: &str, items: &[(String, String, u32)]) -> Option<u32> {
+    let want = norm(wanted);
+    if let Some(x) = items.iter().find(|x| x.0 == want) {
+        return Some(x.2);
+    }
+    const BAD: &[&str] = &["soundtrack", "ost", "dlc", "demo", "playtest", "artbook", "pack", "seasonpass", "expansion", "dedicatedserver", "sdk", "editor", "beta"];
+    items.iter().find(|(n, raw, _)| {
+        want.len() > 5 && (n.starts_with(&want) || want.starts_with(n.as_str())) && !BAD.iter().any(|b| n.trim_start_matches(&want).contains(b) || is_test_name(raw))
+    }).map(|x| x.2)
+}
+
+/// Tools that are not games (editors, servers, SDKs…).
+pub fn is_tool_name(name: &str) -> bool {
+    let n = format!(" {} ", name.to_lowercase());
+    [" editor ", " sdk ", " dedicated server ", " server ", " modding tools ", " mod tools ", " toolkit ", " benchmark "].iter().any(|k| n.contains(k))
 }
 
 pub async fn tag_names(c: &Client) -> HashMap<u64, String> {
@@ -130,15 +148,40 @@ pub async fn steam_batch(c: &Client, ids: &[u32], tags: &HashMap<u64, String>) -
             }
             cats.truncate(6);
         }
-        if name.to_lowercase().contains("demo") || name.to_lowercase().contains("démo") {
-            cats.insert(0, "Démo".into());
+        // Steam store app type: 0 game, 1 demo, 4 DLC, 5 soundtrack, 6 software, 12 playtest…
+        match it.get("type").and_then(|v| v.as_u64()).unwrap_or(0) {
+            6 => cats = vec!["Logiciel".into()],
+            1 | 12 => cats.insert(0, "Démo".into()),
+            3..=5 | 7..=11 => cats = vec!["Extra".into()],
+            _ if is_tool_name(&name) => cats = vec!["Logiciel".into()],
+            _ if is_test_name(&name) => cats.insert(0, "Démo".into()),
+            _ => {}
         }
         out.insert(id, Info { name, cover, hero, logo, tags: cats });
     }
     Some(out)
 }
 
+/// Demos, playtests and betas are kept apart from real games.
+pub fn is_test_name(name: &str) -> bool {
+    let n = format!(" {} ", name.to_lowercase().replace(['(', ')', '-', ':', '–'], " "));
+    [" demo ", " démo ", " playtest ", " beta ", " bêta ", " test branch ", " pts ", " prologue demo "].iter().any(|k| n.contains(k))
+}
+
+/// Name of a delisted Steam app, from its community hub title.
+pub async fn community_name(c: &Client, id: u32) -> Option<String> {
+    let html = c.get(format!("https://steamcommunity.com/app/{id}")).send().await.ok()?.text().await.ok()?;
+    let t = html.split("<title>").nth(1)?.split("</title>").next()?;
+    let n = t.split("::").nth(1)?.trim();
+    (!n.is_empty() && !n.eq_ignore_ascii_case("Error")).then(|| n.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\""))
+}
+
 pub fn apply(g: &mut Game, i: &Info) {
+    // a game bought elsewhere that matched a Steam extra (soundtrack, DLC…) is a wrong match
+    if g.source != "steam" && i.tags.iter().any(|t| t == "Extra") {
+        g.steam_appid = None;
+        return;
+    }
     if g.name.is_empty() || g.name.starts_with("Jeu Steam ") {
         g.name = i.name.clone();
     }
@@ -270,4 +313,56 @@ pub async fn epic_free(c: &Client) -> Vec<Free> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn demo_and_beta_names() {
+        for n in ["10 Million Pixels Demo", "The Finals Playtest", "Barony (Beta)", "Crucible Beta", "PSI: Pressure Climbing Demo"] {
+            assert!(is_test_name(n), "{n}");
+        }
+        for n in ["Valheim", "Betrayer", "Demon's Souls", "Alphabeta", "Elden Ring"] {
+            assert!(!is_test_name(n), "{n}");
+        }
+    }
+    #[test]
+    fn store_name_matching() {
+        let items = vec![
+            (norm("Supraland Soundtrack"), "Supraland Soundtrack".to_string(), 1),
+            (norm("Supraland"), "Supraland".to_string(), 2),
+        ];
+        assert_eq!(best_match("Supraland", &items), Some(2));
+        let only_ost = vec![(norm("Oxenfree Soundtrack"), "Oxenfree Soundtrack".to_string(), 3)];
+        assert_eq!(best_match("Oxenfree", &only_ost), None);
+        let edition = vec![(norm("Dying Light Definitive Edition"), "Dying Light Definitive Edition".to_string(), 4)];
+        assert_eq!(best_match("Dying Light", &edition), Some(4));
+        let demo = vec![(norm("Figment Demo"), "Figment Demo".to_string(), 5)];
+        assert_eq!(best_match("Figment", &demo), None);
+        assert!(is_tool_name("s&box editor") && is_tool_name("ARK Dedicated Server") && !is_tool_name("Serverless Souls"));
+    }
+    #[test]
+    fn categories_map() {
+        assert_eq!(category("souls-like"), Some("Souls-like"));
+        assert_eq!(category("survie"), Some("Survie"));
+        assert_eq!(category("horreur de survie"), Some("Horreur"));
+        assert_eq!(category("jeu solo"), Some("Solo"));
+        assert_eq!(category("pixel art"), None);
+    }
+    #[test]
+    fn accent_of_a_red_picture_is_red() {
+        let img = image::RgbImage::from_pixel(60, 90, image::Rgb([220, 30, 40]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        let (a, d) = accent(buf.get_ref()).unwrap();
+        let r = u8::from_str_radix(&a[1..3], 16).unwrap();
+        let g = u8::from_str_radix(&a[3..5], 16).unwrap();
+        assert!(r > 180 && g < 120, "{a}");
+        assert!(u8::from_str_radix(&d[1..3], 16).unwrap() < 60, "{d}");
+    }
+    #[test]
+    fn strip_news_markup() {
+        assert_eq!(strip("[b]Patch[/b] <i>notes</i> {STEAM_CLAN_IMAGE}/x.png https://a.b ok"), "Patch notes ok");
+    }
 }
