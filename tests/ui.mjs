@@ -33,6 +33,8 @@ const click = async (sel) => {
   if (!ok) throw new Error(`introuvable : ${sel}`);
   await sleep(350);
 };
+// click without scrolling the element into view (to measure page jumps)
+const clickKeep = async (sel) => { const ok = await page.evaluate((x) => { const el = document.querySelector(x); if (!el) return false; el.click(); return true; }, sel); if (!ok) throw new Error(`introuvable : ${sel}`); };
 const count = (sel) => page.$$eval(sel, (l) => l.length);
 const text = (sel) => page.$eval(sel, (e) => e.textContent.trim());
 const assert = (c, m) => { if (!c) throw new Error(m); };
@@ -112,10 +114,31 @@ await check('Collections Apps et Démos & tests', async () => {
   return `Apps : ${apps.length} (${apps.slice(0, 4).join(', ')}) · Démos & tests : ${demos}`;
 });
 
+await check('Aucun saut de page à l\'ouverture des menus', async () => {
+  const pos = () => page.evaluate(() => ({ y: Math.round(scrollY), lib: Math.round(document.querySelector('#lib').getBoundingClientRect().top) }));
+  await page.evaluate(() => window.scrollTo(0, document.querySelector('#lib').offsetTop - 120));
+  await sleep(400);
+  const before = await pos();
+  await clickKeep('[data-menu="sort"]'); await sleep(400);
+  const open = await pos();
+  assert(await page.$('#sort-menu .menu'), 'menu de tri non ouvert');
+  await page.mouse.click(5, 300); await sleep(400);
+  const closed = await pos();
+  await clickKeep('[data-menu="free"]'); await sleep(300); const free = await pos(); await page.keyboard.press('Escape'); await sleep(300);
+  await clickKeep('[data-menu="sort"]'); await sleep(300);
+  await clickKeep('#sort-menu [data-v="hours"]'); await sleep(500);
+  const sorted = await pos();
+  const moved = [open, closed, free, sorted].map((p) => Math.abs(p.y - before.y) + Math.abs(p.lib - before.lib));
+  assert(moved.every((d) => d <= 2), `la page a bougé : ${moved.join(' / ')} px (ouvrir / fermer / cadeau / trier)`);
+  await clickKeep('[data-menu="sort"]'); await sleep(300); await clickKeep('#sort-menu [data-v="recent"]'); await sleep(300);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  return `0 px de décalage (ouvrir, fermer, autre menu, trier)`;
+});
+
 await check('Menu de tri + chaque tri', async () => {
   for (const k of ['hours', 'az', 'pct', 'size', 'recent']) {
     await click('[data-menu="sort"]');
-    assert(await page.$('.menu [data-act="sort"]'), 'menu de tri non ouvert');
+    assert(await page.$('#sort-menu .menu'), 'menu de tri non ouvert');
     await click(`.menu [data-act="sort"][data-v="${k}"]`);
   }
   const first = await page.$$eval('#vgrid .cov .nm', (l) => l.slice(0, 3).map((x) => x.textContent));

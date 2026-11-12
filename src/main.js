@@ -256,7 +256,35 @@ function dealsRow() {
     </div></section>`;
 }
 
-function renderHome() {
+function sortMenu() {
+  const slot = $('#sort-menu'); if (!slot) return;
+  $('[data-menu="sort"]')?.setAttribute('aria-expanded', String(S.menu === 'sort'));
+  slot.innerHTML = S.menu === 'sort' ? `<div class="menu solid" role="menu" style="right:0;top:54px">
+    <span class="mh">TRIER PAR</span>
+    ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}">${l}${S.sort === k ? icon.check : ''}</button>`).join('')}
+    <div class="sep"></div><span class="mh">AFFICHER</span>
+    <button class="mi" data-act="soft">${S.showSoft ? 'Masquer' : 'Afficher'} les apps dans « Tout »<span class="r">${S.games.filter(isSoft).length}</span></button>
+  </div>` : '';
+}
+function optsSlot() {
+  const slot = $('#opts-menu'); const g = cur(); if (!slot || !g) return;
+  $('[data-menu="opts"]')?.setAttribute('aria-expanded', String(S.menu === 'opts'));
+  slot.innerHTML = S.menu === 'opts' ? optsMenu(g) : '';
+}
+/** Menus only: never re-render the page behind them (no layout jump). */
+function renderMenus() { sortMenu(); optsSlot(); renderFree(); renderFriends(); }
+
+/** Re-render a view in place, keeping the page height and scroll position. */
+function keepScroll(host, paint) {
+  const y = window.scrollY;
+  host.style.minHeight = `${host.offsetHeight}px`;
+  paint();
+  host.style.minHeight = '';
+  if (Math.abs(window.scrollY - y) > 1) window.scrollTo({ top: y, behavior: 'instant' });
+}
+
+function renderHome() { keepScroll($('#home'), paintHome); }
+function paintHome() {
   const all = S.games.filter(isGame);
   const total = all.reduce((s, g) => s + g.playtimeMin, 0);
   const bySrc = Object.keys(SRC).map((k) => [k, all.filter((g) => g.source === k).reduce((s, g) => s + g.playtimeMin, 0)]).filter(([, v]) => v > 0);
@@ -329,17 +357,14 @@ function renderHome() {
           <div class="anchor">
             <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
               ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong></button>
-            ${S.menu === 'sort' ? `<div class="menu solid" role="menu" style="right:0;top:54px">
-              <span class="mh">TRIER PAR</span>
-              ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}">${l}${S.sort === k ? icon.check : ''}</button>`).join('')}
-              <div class="sep"></div><span class="mh">AFFICHER</span>
-              <button class="mi" data-act="soft">${S.showSoft ? 'Masquer' : 'Afficher'} les apps dans « Tout »<span class="r">${S.games.filter(isSoft).length}</span></button>
-            </div>` : ''}
+            <div id="sort-menu"></div>
           </div>
         </div>
       </div>
       ${list.length ? '<div id="vgrid" class="vgrid"></div>' : `<div class="grid"><div class="empty">${S.games.length ? 'Aucun jeu ne correspond.' : S.busy ? 'Analyse de Steam, Epic et GOG…' : 'Aucun jeu détecté.'}</div></div>`}
     </section>`;
+  layoutGrid();
+  sortMenu();
   mountGrid(list);
 }
 
@@ -460,7 +485,8 @@ function memoPanel(g) {
   </div>`;
 }
 
-function renderGame() {
+function renderGame() { keepScroll($('#game'), paintGame); optsSlot(); }
+function paintGame() {
   const g = cur();
   if (!g) { goHome(); return; }
   theme(g.accent, g.deep);
@@ -492,7 +518,7 @@ function renderGame() {
             <button class="ibtn glass round" data-act="fav" aria-label="${isFav(g) ? 'Retirer des favoris' : 'Ajouter aux favoris'}" style="color:${isFav(g) ? '#FFD45C' : '#fff'}">${icon.star(isFav(g))}</button>
             <div class="anchor">
               <button class="ibtn glass round" data-act="menu" data-menu="opts" aria-label="Options du jeu" aria-expanded="${S.menu === 'opts'}">${icon.opts}</button>
-              ${S.menu === 'opts' ? optsMenu(g) : ''}
+              <div id="opts-menu"></div>
             </div>
           </div>
           <div class="stats glass">
@@ -767,7 +793,7 @@ async function setBig(on) {
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   const inMenu = e.target.closest('.menu');
-  if (!el) { if (S.menu && !inMenu) { S.menu = null; S.sub = null; render(); } return; }
+  if (!el) { if (S.menu && !inMenu) { S.menu = null; S.sub = null; renderMenus(); } return; }
   const v = el.dataset.v; const g = cur();
   switch (el.dataset.act) {
     case 'sel': S.menu = null; select(el.dataset.id); return;
@@ -783,8 +809,8 @@ document.addEventListener('click', async (e) => {
     case 'menu': S.menu = S.menu === el.dataset.menu ? null : el.dataset.menu; S.sub = null;
       if (S.menu === 'free' && S.free === null) invoke('free_games').then((f) => { S.free = f; renderFree(); }).catch(() => { S.free = []; renderFree(); });
       if (S.menu === 'friends') { S.friends = S.friends ?? null; loadSocial(); }
-      render(); return;
-    case 'sub': S.sub = S.sub === v ? null : v; renderGame(); return;
+      renderMenus(); return;
+    case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
     case 'tab': S.tab = v; S.menu = null; if (v === 'shots') ensureShots(g); renderGame(); $('#panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       if (v === 'memo') setTimeout(() => $('#memo-ta')?.focus(), 350); return;
     case 'achf': S.achF = v; renderGame(); return;
@@ -805,7 +831,7 @@ document.addEventListener('click', async (e) => {
     case 'togcol': {
       const c = S.user.collections.find((x) => x.name === v); if (!c) return;
       const i = c.ids.indexOf(g.id); if (i >= 0) c.ids.splice(i, 1); else c.ids.push(g.id);
-      saveUser(); renderGame(); return;
+      saveUser(); optsSlot(); return;
     }
     case 'newcol': S.modal = 'newcol|' + (v || ''); S.menu = null; S.newColor = PALETTE[0]; renderModal(); return;
     case 'colcolor': S.newColor = v; document.querySelectorAll('.swatch').forEach((s) => s.setAttribute('aria-pressed', String(s.dataset.v === v))); return;
@@ -824,7 +850,7 @@ document.addEventListener('click', async (e) => {
     case 'col': S.col = v; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'gocol': S.col = v; S.view = 'home'; render(); $('#lib')?.scrollIntoView({ behavior: 'smooth' }); return;
     case 'sort': S.sort = v; S.menu = null; renderHome(); return;
-    case 'soft': S.showSoft = !S.showSoft; renderHome(); return;
+    case 'soft': S.showSoft = !S.showSoft; S.menu = null; renderHome(); return;
     case 'refresh': refresh(); return;
     case 'rescan': S.menu = null; refresh(true); toast('Mise à jour des infos…'); return;
     case 'settings': S.modal = 'settings'; S.menu = null; await loadAccounts(); renderModal(); return;
@@ -847,7 +873,7 @@ document.addEventListener('click', async (e) => {
     case 'wp-mode': P.wp = v; savePrefs(); renderModal(); if (S.view === 'home') renderHome(); return;
     case 'wp-clear': await invoke('set_wallpaper', { dataUrl: '' }); wpPath = null; renderModal(); if (S.view === 'home') renderHome(); return;
   }
-  if (S.menu) { S.menu = null; S.sub = null; render(); }
+  if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
 });
 
 function commitSettingsText() {
@@ -869,7 +895,7 @@ document.addEventListener('keydown', (e) => {
 });
 function back() {
   if (S.modal) { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); }
-  else if (S.menu) { S.menu = null; S.sub = null; render(); }
+  else if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
   else if (S.view !== 'home') goHome();
 }
 document.addEventListener('input', (e) => {
