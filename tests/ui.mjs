@@ -245,10 +245,64 @@ await check('Favori (ajout / retrait)', async () => {
   return 'OK';
 });
 
+await check('Note façon Letterboxd + coup de cœur', async () => {
+  const pt = async () => {
+    await page.evaluate(() => document.querySelector('.rate .star[data-v="4"]').scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await sleep(700);
+    return page.evaluate(() => { const b = document.querySelector('.rate .star[data-v="4"]'); const r = b.getBoundingClientRect(); return { x: r.left + r.width * 0.25, y: r.top + r.height / 2 }; });
+  };
+  let p;
+  if (!/Pas encore/.test(await text('.rate .rv'))) { p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300); }
+  p = await pt(); await page.mouse.click(p.x, p.y); await sleep(400);
+  const t1 = await text('.rate .rv');
+  assert(/3,5/.test(t1), `demi-étoile non prise : ${t1}`);
+  await click('.rate .heart'); await sleep(300);
+  const h = await page.$eval('.rate .heart', (e) => e.getAttribute('aria-pressed'));
+  assert(h === 'true', 'cœur non activé');
+  await click('.tab[data-v="review"]'); await sleep(400);
+  assert(await page.$('#review-ta'), 'onglet avis absent');
+  p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300);
+  await click('.rate .heart'); await sleep(300);
+  const t2 = await text('.rate .rv');
+  assert(/Pas encore|Clique/.test(t2), `note non effacée : ${t2}`);
+  return 'demi-étoile, cœur, avis et effacement OK';
+});
+
+await check('Durée HowLongToBeat', async () => {
+  for (let i = 0; i < 20 && !(await page.$('.hl')); i++) await sleep(500);
+  const t = await page.$eval('.gside', (e) => e.innerText.replace(/\s+/g, ' '));
+  assert(/POUR FINIR/.test(t), 'carte HowLongToBeat absente');
+  return (t.match(/POUR FINIR.*?100 %/)?.[0] || t).slice(0, 140);
+});
+
 await check('Retour à l\'accueil (Échap)', async () => {
   await page.keyboard.press('Escape'); await sleep(600);
   assert(await page.$('#vgrid'), 'pas revenu à l\'accueil');
   return 'OK';
+});
+
+await check('Apparence : accent fixe et taille des jaquettes', async () => {
+  const cols = async () => page.evaluate(() => getComputedStyle(document.querySelector('#vgrid .grid')).gridTemplateColumns.split(' ').length);
+  const c0 = await cols();
+  await click('[data-act="settings"]');
+  await click('[data-act="acc-mode"][data-v="fixed"]');
+  await click('[data-act="acc-col"][data-v="#3EE6A8"]');
+  const a = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--a').trim());
+  await click('[data-act="size"][data-v="L"]');
+  await page.keyboard.press('Escape'); await sleep(500);
+  const c1 = await cols();
+  await click('[data-act="settings"]');
+  await click('[data-act="size"][data-v="M"]');
+  await click('[data-act="acc-mode"][data-v="dyn"]');
+  await page.keyboard.press('Escape'); await sleep(400);
+  assert(a.toUpperCase() === '#3EE6A8', `accent fixe non appliqué : ${a}`);
+  assert(c1 < c0, `grandes jaquettes : ${c0} → ${c1} colonnes`);
+  return `accent ${a} · colonnes ${c0} → ${c1} (grandes)`;
+});
+
+await check('Bouton « Ajouter un jeu »', async () => {
+  assert(await page.$('[data-act="addgame"]'), 'bouton absent');
+  return 'présent (la fenêtre de choix de fichier n\'est pas testable automatiquement)';
 });
 
 await check('Mémoire', async () => {

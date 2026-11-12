@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const S = {
-  games: [], memos: {}, news: {}, free: null, steamFree: null, gogFree: null, achsum: {}, ach: {}, shots: {}, history: {},
+  games: [], memos: {}, news: {}, hltb: {}, version: '', update: null, edit: null, free: null, steamFree: null, gogFree: null, achsum: {}, ach: {}, shots: {}, history: {},
   acc: { steamKey: false, steamId: null, epic: null },
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
@@ -12,19 +12,19 @@ const S = {
 };
 const $ = (s) => document.querySelector(s);
 const P = (() => {
-  const d = { wp: 'auto', wpGame: '', wpBlur: 0, wpDim: 45, big: false };
+  const d = { wp: 'auto', wpGame: '', wpBlur: 0, wpDim: 45, big: false, accentMode: 'dyn', accentFixed: '#FF6B9A', size: 'M', glass: true, motion: true };
   try { return { ...d, ...JSON.parse(localStorage.getItem('prefs') || '{}') }; } catch { return d; }
 })();
 const savePrefs = () => { try { localStorage.setItem('prefs', JSON.stringify(P)); } catch { /* ignore */ } };
 let wpPath = null;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const SRC = { steam: 'Steam', epic: 'Epic', gog: 'GOG' };
+const SRC = { steam: 'Steam', epic: 'Epic', gog: 'GOG', pc: 'PC' };
 const CAT = {
   Tout: '#FF6B9A', Favoris: '#FFD45C', Installés: '#6EE7A8', 'Mises à jour': '#FFB020', 'Avec mémo': '#FFE08A', Survie: '#3EE6A8', 'Souls-like': '#FF6B6B',
   Roguelite: '#FF9F43', Metroidvania: '#A78BFA', Horreur: '#FF5C7A', Coop: '#4CBCE6', Multijoueur: '#5B9DFF', Solo: '#F5C84C', RPG: '#F5B84C',
   Chill: '#C97CF0', Incrémental: '#7CE0F0', Puzzle: '#7BC74D', Plateformes: '#FFB86B', 'Monde ouvert': '#34D399', Construction: '#F59E0B',
   Stratégie: '#60A5FA', Simulation: '#2DD4BF', Tir: '#F87171', Course: '#FB923C', Rythme: '#E879F9', Aventure: '#FBBF24', Action: '#FB7185',
-  Démo: '#94A3B8', Logiciel: '#7C9CFF', Masqués: '#8B8B96',
+  Démo: '#94A3B8', Logiciel: '#7C9CFF', Masqués: '#8B8B96', 'Coups de cœur': '#FF8000', Notés: '#00E054',
 };
 const PALETTE = ['#FF6B9A', '#5B9DFF', '#3EE6A8', '#FFB020', '#C97CF0', '#FF6B6B', '#2DD4BF', '#F5C84C'];
 const isCustom = (c) => c.startsWith('c:');
@@ -34,7 +34,7 @@ const lbl = (c) => (c === 'Logiciel' ? 'Apps' : c === 'Démo' ? 'Démos & tests'
 // ---------- images: resized on the Rust side to the displayed size ----------
 const IMG = 'http://img.localhost/';
 const dpr = () => window.devicePixelRatio || 1;
-const TW = () => (dpr() > 1.3 ? 440 : 300);
+const TW = () => (P.size === 'L' || dpr() > 1.3 ? 440 : 300);
 const bgW = () => [1280, 1600, 1920, 2560, 3840].find((w) => w >= innerWidth * dpr()) || 3840;
 const th = (u, w) => (u ? `${IMG}t?w=${w}&u=${encodeURIComponent(u)}` : '');
 const loc = (p, w) => (p ? `${IMG}f?w=${w}&p=${encodeURIComponent(p)}` : '');
@@ -71,6 +71,15 @@ const icon = {
 };
 
 const cur = () => S.games.find((g) => g.id === S.sel) || null;
+const rating = (id) => S.user.ratings?.[id] || null;
+const starTxt = (v) => (v ? `★ ${String(v).replace('.', ',')}` : '');
+function starSvg(fill, i) {
+  const d = 'M12 2.6l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.4l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z';
+  return `<svg aria-hidden="true" width="30" height="30" viewBox="0 0 24 24"><defs><clipPath id="sh${i}"><rect x="0" y="0" width="${fill * 24}" height="24"/></clipPath></defs>
+    <path d="${d}" fill="rgba(255,255,255,.14)"/><path d="${d}" fill="#00E054" clip-path="url(#sh${i})"/></svg>`;
+}
+const starsHtml = (v) => [1, 2, 3, 4, 5].map((i) => `<button class="star" data-act="rate" data-v="${i}" aria-label="Noter ${i} sur 5">${starSvg(v >= i ? 1 : v >= i - 0.5 ? 0.5 : 0, i)}</button>`).join('');
+const heartSvg = (on) => `<svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="${on ? '#FF8000' : 'none'}" stroke="${on ? '#FF8000' : 'currentColor'}" stroke-width="2" stroke-linejoin="round"><path d="M12 20.5s-7.5-4.6-9.3-9.1C1.4 8 3.6 4.5 7 4.5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.4 0 5.6 3.5 4.3 6.9-1.8 4.5-9.3 9.1-9.3 9.1z"/></svg>`;
 const isSoft = (g) => g.tags.includes('Logiciel');
 const isDemo = (g) => g.tags.includes('Démo');
 const isExtra = (g) => g.tags.includes('Extra');
@@ -95,6 +104,7 @@ function hexDeep(hex) {
   return `#${f(n >> 16 & 255)}${f(n >> 8 & 255)}${f(n & 255)}`;
 }
 function theme(a, d) {
+  if (P.accentMode === 'fixed') { a = P.accentFixed; d = hexDeep(a); }
   const r = document.documentElement.style;
   r.setProperty('--a', a || '#B8C2D6');
   r.setProperty('--d', d || hexDeep(a));
@@ -143,7 +153,7 @@ function cover(g) {
       ${memo || isFav(g) ? `<span class="memob">${isFav(g) ? `<span style="color:#FFD45C">${icon.star(true)}</span>` : icon.pen}</span>` : ''}
       ${p !== null ? `<span class="pb"><span style="width:${p}%;background:${p === 100 ? '#6EE7A8' : g.accent || '#fff'}"></span></span>` : ''}
     </span>
-    <span class="meta"><span class="nm">${esc(g.name)}</span><span class="h">${g.playtimeMin ? fmtH(g.playtimeMin) : ''}</span></span>
+    <span class="meta"><span class="nm">${esc(g.name)}</span><span class="h">${rating(g.id)?.stars ? `<span class="rt">${starTxt(rating(g.id).stars)}</span>` : g.playtimeMin ? fmtH(g.playtimeMin) : ''}</span></span>
   </button>`;
 }
 
@@ -158,7 +168,7 @@ function mountGrid(list) {
 function layoutGrid() {
   const host = $('#vgrid'); if (!host) return;
   const W = host.clientWidth || innerWidth - 112;
-  const min = P.big ? 210 : 150; const gap = 20; const rowGap = 24;
+  const min = ({ S: 118, M: 150, L: 200 }[P.size] || 150) + (P.big ? 50 : 0); const gap = 20; const rowGap = 24;
   VG.cols = Math.max(1, Math.floor((W + gap) / (min + gap)));
   const itemW = (W - gap * (VG.cols - 1)) / VG.cols;
   VG.cellH = Math.ceil(itemW * 1.5 + 9 + 20);
@@ -184,6 +194,8 @@ addEventListener('resize', () => { if ($('#vgrid')) { layoutGrid(); paintGrid(tr
 function inCol(g, c) {
   if (c === 'Tout' || c === 'Masqués') return true;
   if (c === 'Favoris') return isFav(g);
+  if (c === 'Coups de cœur') return !!rating(g.id)?.heart;
+  if (c === 'Notés') return !!rating(g.id)?.stars;
   if (c === 'Installés') return g.installed;
   if (c === 'Mises à jour') return g.update;
   if (c === 'Avec mémo') return !!S.memos[g.id];
@@ -198,6 +210,8 @@ function collections() {
   base.forEach((g) => g.tags.forEach((t) => (counts[t] = (counts[t] || 0) + 1)));
   const list = ['Tout'];
   if (pool.some(isFav)) list.push('Favoris');
+  if (pool.some((g) => rating(g.id)?.heart)) list.push('Coups de cœur');
+  if (pool.some((g) => rating(g.id)?.stars)) list.push('Notés');
   S.user.collections.forEach((c) => list.push('c:' + c.name));
   list.push('Installés');
   if (pool.some((g) => g.update)) list.push('Mises à jour');
@@ -223,11 +237,12 @@ function filtered() {
     hours: (a, b) => b.playtimeMin - a.playtimeMin,
     az: (a, b) => a.name.localeCompare(b.name, 'fr'),
     pct: (a, b) => (pct(b.id) ?? -1) - (pct(a.id) ?? -1),
+    rating: (a, b) => (rating(b.id)?.stars || 0) - (rating(a.id)?.stars || 0) || b.playtimeMin - a.playtimeMin,
     size: (a, b) => b.size - a.size,
   };
   return l.sort(by[S.sort]);
 }
-const SORTS = [['recent', 'Joués récemment'], ['hours', 'Temps de jeu'], ['pct', 'Complétion des succès'], ['az', 'Alphabétique'], ['size', 'Taille sur disque']];
+const SORTS = [['recent', 'Joués récemment'], ['hours', 'Temps de jeu'], ['rating', 'Ma note'], ['pct', 'Complétion des succès'], ['az', 'Alphabétique'], ['size', 'Taille sur disque']];
 
 const normN = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 /** Every free-to-keep offer, all stores, flagged when already in the library. */
@@ -354,6 +369,7 @@ function paintHome() {
         <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(lbl(col))}</h2><span class="muted">${list.length} jeu${list.length > 1 ? 'x' : ''}${S.q ? ` pour « ${esc(S.q)} »` : ''}</span></div>
         <div class="row2">
           ${isCustom(col) ? `<button class="btn2" data-act="delcol" data-v="${esc(col)}">Supprimer la collection</button>` : ''}
+          <button class="btn2" data-act="addgame" title="Ajouter un jeu hors launcher (.exe, raccourci)">+ Ajouter un jeu</button>
           <div class="anchor">
             <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
               ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong></button>
@@ -403,6 +419,8 @@ function optsMenu(g) {
       </div>` : ''}
     </div>
     <button class="mi" data-act="tab" data-v="memo">Écrire un mémo</button>
+    <button class="mi" data-act="tab" data-v="review">Noter / écrire un avis</button>
+    ${g.source === 'pc' ? '<button class="mi" data-act="editgame">Modifier le jeu (nom, images)…</button>' : ''}
     <div class="sep"></div>
     ${g.installed ? `<button class="mi" data-act="backup">Sauvegarder mes parties</button>` : ''}
     ${g.installed && g.installPath ? '<button class="mi" data-act="folder">Ouvrir le dossier du jeu</button>' : ''}
@@ -473,6 +491,40 @@ function shotsPanel(g) {
   return `<div class="shots">${l.map((p) => `<button class="shot" data-act="openfile" data-v="${esc(p)}" title="Ouvrir en grand"><img src="${esc(loc(p, w))}" alt="" loading="lazy" decoding="async"></button>`).join('')}</div>`;
 }
 
+function hltbCard(g) {
+  if (isSoft(g)) return '';
+  const h = S.hltb[g.id];
+  if (h === undefined) return '';
+  if (h === null) return '';
+  if (h.err) return '';
+  const pt = g.playtimeMin / 60;
+  const ref = h.main || h.plus || h.full;
+  const pc = ref ? Math.min(100, Math.round((pt / ref) * 100)) : 0;
+  const f = (x) => (x ? `${x < 10 ? String(x).replace('.', ',') : Math.round(x)} h` : '—');
+  return `<div class="card glass"><span class="k">POUR FINIR · HOWLONGTOBEAT</span>
+    <div class="hl"><span><b>${f(h.main)}</b><small>Histoire</small></span><span><b>${f(h.plus)}</b><small>+ Extras</small></span><span><b>${f(h.full)}</b><small>100 %</small></span></div>
+    ${ref && pt ? `<span class="minibar wide"><span style="width:${pc}%"></span></span><span class="muted" style="font-size:12px">Tu en es à ${fmtH(g.playtimeMin)}${pc >= 100 ? ' : histoire largement bouclée' : ` · ${pc} % de la durée de l'histoire`}</span>` : ''}
+    <button class="alink" data-act="url" data-v="${esc(h.url)}" style="min-height:0">Voir « ${esc(h.name)} » sur HowLongToBeat ↗</button></div>`;
+}
+async function ensureHltb(g) {
+  if (!g || S.hltb[g.id] !== undefined || isSoft(g)) return;
+  S.hltb[g.id] = undefined;
+  try { S.hltb[g.id] = await invoke('hltb', { id: g.id }); } catch (e) { S.hltb[g.id] = { err: String(e) }; }
+  if (S.view === 'game' && S.sel === g.id) renderGame();
+}
+
+function reviewPanel(g) {
+  const r = rating(g.id) || {};
+  return `<div class="memo-tab">
+    <div class="rate big-rate" role="group" aria-label="Ma note"><span class="stars">${starsHtml(r.stars || 0)}</span>
+      <button class="heart" data-act="heart" aria-pressed="${!!r.heart}" aria-label="Coup de cœur">${heartSvg(!!r.heart)}</button>
+      <span class="rv">${r.stars ? `${String(r.stars).replace('.', ',')} / 5` : 'Clique une étoile (moitié gauche = demi-étoile)'}</span></div>
+    <label for="review-ta" style="font-size:15px;font-weight:600">Mon avis sur ${esc(g.name)}</label>
+    <textarea id="review-ta" rows="6" placeholder="Ce que tu en as pensé, en quelques lignes…">${esc(r.review || '')}</textarea>
+    <div class="btns"><button class="save" data-act="save-review">Enregistrer l'avis</button><span class="muted">${r.date ? `Noté le ${day(r.date)}` : ''}</span></div>
+  </div>`;
+}
+
 function memoPanel(g) {
   const memo = S.memos[g.id] || '';
   return `<div class="memo-tab">
@@ -497,8 +549,8 @@ function paintGame() {
   const n = g.steamAppid && S.news[g.steamAppid]?.[0];
   const playing = (S.friends || []).filter((f) => f.game && f.appid && f.appid === g.steamAppid);
   const similar = visible().filter((x) => x.id !== g.id && g.tags[0] && x.tags.includes(g.tags[0])).sort((x, y) => y.lastPlayed - x.lastPlayed || y.playtimeMin - x.playtimeMin).slice(0, 12);
-  const tabs = [['ach', `Succès${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus & patch notes'], ['shots', 'Captures'], ['memo', 'Mémo']];
-  const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, memo: memoPanel }[S.tab](g);
+  const tabs = [['ach', `Succès${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus & patch notes'], ['shots', 'Captures'], ['review', 'Mon avis'], ['memo', 'Mémo']];
+  const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, review: reviewPanel, memo: memoPanel }[S.tab](g);
   const title = g.logo
     ? `<img class="logo" src="${esc(th(g.logo, 900))}" alt="${esc(g.name)}" onerror="this.replaceWith(Object.assign(document.createElement('h1'),{className:'title',textContent:${esc(JSON.stringify(g.name))}}))">`
     : `<h1 class="title">${esc(g.name)}</h1>`;
@@ -527,8 +579,15 @@ function paintGame() {
             <div><span class="k">DERNIÈRE SESSION</span><span class="v">${ago(g.lastPlayed)}</span></div>
             <div><span class="k">TAILLE</span><span class="v">${g.installed ? size(g.size) : 'Non installé'}</span></div>
           </div>
+          <div class="rate glass" role="group" aria-label="Ma note">
+            <span class="stars">${starsHtml(rating(g.id)?.stars || 0)}</span>
+            <button class="heart" data-act="heart" aria-pressed="${!!rating(g.id)?.heart}" aria-label="Coup de cœur">${heartSvg(!!rating(g.id)?.heart)}</button>
+            <span class="rv">${rating(g.id)?.stars ? `${String(rating(g.id).stars).replace('.', ',')} / 5` : 'Pas encore noté'}</span>
+            <button class="alink" data-act="tab" data-v="review" style="min-height:0">${rating(g.id)?.review ? 'Mon avis' : 'Écrire un avis'} ↓</button>
+          </div>
         </div>
         <div class="gside">
+          ${hltbCard(g)}
           ${playing.length ? `<div class="card glass"><span class="k">EN JEU EN CE MOMENT</span>${playing.map((f) => `<span class="fr"><img src="${esc(f.avatar)}" alt="">${esc(f.name)}</span>`).join('')}</div>` : ''}
           ${memo ? `<div class="card glass"><span class="k">${icon.pen}MÉMO · OÙ J'EN SUIS</span><span class="memo">${esc(memo)}</span><button class="alink" data-act="tab" data-v="memo">Modifier le mémo ↓</button></div>`
             : `<button class="ibtn glass memo-add" data-act="tab" data-v="memo" aria-label="Écrire un mémo" title="Écrire un mémo">${icon.pen}</button>`}
@@ -547,6 +606,19 @@ function paintGame() {
 }
 
 // ---------- STATS ----------
+
+function ratingsBox() {
+  const rs = Object.entries(S.user.ratings || {}).filter(([id, r]) => r.stars && S.games.some((g) => g.id === id));
+  if (!rs.length) return '<section class="panel glass sbox"><h3>Mes notes</h3><span class="muted">Note tes jeux depuis leur fiche (étoiles et cœur), comme sur Letterboxd.</span></section>';
+  const buckets = Array.from({ length: 10 }, (_, i) => rs.filter(([, r]) => Math.round(r.stars * 2) === i + 1).length);
+  const mx = Math.max(...buckets, 1);
+  const avg = rs.reduce((s, [, r]) => s + r.stars, 0) / rs.length;
+  const hearts = Object.values(S.user.ratings).filter((r) => r.heart).length;
+  return `<section class="panel glass sbox"><h3>Mes notes</h3>
+    <div class="rhist">${buckets.map((n, i) => `<span title="${(i + 1) / 2} ★ : ${n}" style="height:${Math.max(3, (n / mx) * 100)}%"></span>`).join('')}</div>
+    <div class="rhl"><span class="rt">★</span><span class="muted">${rs.length} jeu${rs.length > 1 ? 'x' : ''} noté${rs.length > 1 ? 's' : ''} · moyenne ${avg.toFixed(1).replace('.', ',')} · ${hearts} coup${hearts > 1 ? 's' : ''} de cœur</span><span class="rt">★★★★★</span></div>
+  </section>`;
+}
 
 function renderStats() {
   theme('#7C9CFF');
@@ -598,6 +670,7 @@ function renderStats() {
         <section class="panel glass sbox"><h3>Par genre</h3>
           ${cats.map(([c, m]) => `<span class="cbar"><span class="cn" style="color:${catColor(c)}">${esc(lbl(c))}</span><span class="ht"><span style="width:${(m / catMax) * 100}%;background:${catColor(c)}"></span></span><b>${fmtH(m)}</b></span>`).join('')}
         </section>
+        ${ratingsBox()}
         <section class="panel glass sbox"><h3>Par plateforme</h3>
           <div class="split">${bySrc.map(([k, m]) => `<span style="flex:${m};background:${{ steam: '#5B9DFF', epic: '#E6E6EA', gog: '#C97CF0' }[k]}" title="${SRC[k]}"></span>`).join('')}</div>
           ${bySrc.map(([k, m]) => `<span class="mini"><b>${SRC[k]}</b><span>${fmtH(m)} · ${Math.round((m / total) * 100)} %</span></span>`).join('')}
@@ -648,6 +721,21 @@ function renderFriends() {
 function renderModal() {
   const m = $('#modal');
   if (!S.modal) { m.innerHTML = ''; return; }
+  if (S.modal === 'editgame' && S.edit) {
+    const e = S.edit;
+    m.innerHTML = `<div class="overlay" data-act="close-modal"><div class="dialog solid" role="dialog" aria-modal="true" aria-label="Modifier le jeu">
+      <h2 style="margin:0">Modifier le jeu</h2>
+      <span class="muted" style="word-break:break-all">${esc(e.exe || '')}</span>
+      <label for="eg-name">Nom affiché</label><input id="eg-name" type="text" value="${esc(e.name)}">
+      <label for="eg-q">Associer à un jeu Steam (jaquette, bannière, catégories, actus, durée)</label>
+      <div class="row2"><input id="eg-q" type="search" value="${esc(e.q ?? e.name)}" style="flex:1"><button class="btn2" data-act="eg-search">Chercher</button></div>
+      <div class="hits">${(e.hits || []).map((h) => `<button class="hit${e.appid === h.id ? ' on' : ''}" data-act="eg-pick" data-v="${h.id}"><img src="${esc(h.img)}" alt="">${esc(h.name)}</button>`).join('') || (e.hits ? '<span class="muted">Aucun résultat.</span>' : '')}</div>
+      <span class="muted">${e.appid ? `Associé à l'appid Steam ${e.appid}` : 'Pas associé : seul le nom sera affiché.'} <button class="alink" data-act="eg-none" style="min-height:0">Aucune association</button></span>
+      <div class="row2" style="justify-content:space-between"><button class="btn2 danger" data-act="eg-remove">Retirer de la bibliothèque</button>
+        <span class="row2"><button class="btn2" data-act="close-modal">Annuler</button><button class="btn2 pri" data-act="eg-save">Enregistrer</button></span></div>
+    </div></div>`;
+    return;
+  }
   if (S.modal.startsWith('newcol')) {
     const gid = S.modal.split('|')[1] || '';
     m.innerHTML = `<div class="overlay" data-act="close-modal"><div class="dialog solid" role="dialog" aria-modal="true" aria-label="Nouvelle collection" style="width:min(440px,100%)">
@@ -665,6 +753,30 @@ function renderModal() {
     <div class="dialog solid" role="dialog" aria-modal="true" aria-label="Paramètres">
       <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Paramètres</h2>
         <button class="ibtn glass" data-act="close-modal" aria-label="Fermer">✕</button></div>
+
+      <div class="box"><h3>Apparence</h3>
+        <span class="muted">Couleur d'accent (boutons, barres, halos)</span>
+        <div class="fseg glass" role="radiogroup" aria-label="Couleur d'accent" style="align-self:flex-start">
+          <button role="radio" data-act="acc-mode" data-v="dyn" aria-pressed="${P.accentMode === 'dyn'}" aria-checked="${P.accentMode === 'dyn'}">Selon le jeu</button>
+          <button role="radio" data-act="acc-mode" data-v="fixed" aria-pressed="${P.accentMode === 'fixed'}" aria-checked="${P.accentMode === 'fixed'}">Couleur fixe</button>
+        </div>
+        ${P.accentMode === 'fixed' ? `<div class="row2">${PALETTE.map((c) => `<button class="swatch" data-act="acc-col" data-v="${c}" aria-label="Couleur ${c}" aria-pressed="${P.accentFixed === c}" style="background:${c}"></button>`).join('')}
+          <label class="swatch custom" title="Autre couleur" style="background:${P.accentFixed}"><input id="acc-pick" type="color" value="${P.accentFixed}" class="sr"></label></div>` : ''}
+        <span class="muted">Taille des jaquettes</span>
+        <div class="fseg glass" role="radiogroup" aria-label="Taille des jaquettes" style="align-self:flex-start">
+          ${[['S', 'Petites'], ['M', 'Normales'], ['L', 'Grandes']].map(([k, x]) => `<button role="radio" data-act="size" data-v="${k}" aria-pressed="${P.size === k}" aria-checked="${P.size === k}">${x}</button>`).join('')}
+        </div>
+        <label class="tgl"><input type="checkbox" data-lp="glass" ${P.glass ? 'checked' : ''}><span class="sw"></span><span><b>Effets de verre</b><span class="muted">Flou derrière les panneaux. À couper sur un PC modeste.</span></span></label>
+        <label class="tgl"><input type="checkbox" data-lp="motion" ${P.motion ? 'checked' : ''}><span class="sw"></span><span><b>Animations</b><span class="muted">Transitions de couleur, survols, éventails.</span></span></label>
+      </div>
+
+      <div class="box"><h3>Mises à jour d'Ultimate</h3>
+        <span class="muted">Version installée : ${esc(S.version || '?')}. L'appli vérifie au démarrage et propose d'installer en un clic (paquets signés).</span>
+        <label for="up-url">Source des mises à jour (latest.json)</label>
+        <input id="up-url" type="text" value="${esc(S.user.updateUrl || '')}" placeholder="https://github.com/TON-COMPTE/ultimate/releases/latest/download/latest.json">
+        <div class="row2"><button class="btn2" data-act="up-check">Rechercher une mise à jour</button><span class="muted" id="up-state">${S.update ? `Version ${esc(S.update.version)} disponible` : ''}</span>
+          ${S.update ? '<button class="btn2 pri" data-act="up-install">Installer et redémarrer</button>' : ''}</div>
+      </div>
 
       <div class="box"><h3>Application</h3>
         ${tog('closeToTray', 'Réduire dans la zone de notification', 'Fermer la fenêtre garde le launcher prêt à se rouvrir instantanément.')}
@@ -722,7 +834,7 @@ function renderModal() {
           <label for="wp-dim">Assombrir : <span id="wp-dim-v">${P.wpDim}</span> %</label><input id="wp-dim" class="range" type="range" min="0" max="85" value="${P.wpDim}">` : '<span class="muted">Suit ton dernier jeu et la couleur de la collection.</span>'}
         <span class="err" id="wp-err"></span>
       </div>
-      <span class="muted" style="font-size:12px">Clés et jetons : Gestionnaire d'identification de Windows. Images : redimensionnées et mises en cache sur le disque.</span>
+      <span class="muted" style="font-size:12px">Ultimate · clés et jetons : Gestionnaire d'identification de Windows. Images : redimensionnées et mises en cache sur le disque.</span>
     </div></div>`;
 }
 
@@ -731,6 +843,8 @@ function renderModal() {
 function render() {
   document.body.classList.toggle('home', S.view === 'home');
   document.body.classList.toggle('big', !!P.big);
+  document.body.classList.toggle('noglass', !P.glass);
+  document.body.classList.toggle('nomotion', !P.motion);
   for (const v of ['home', 'game', 'stats']) $('#' + v).hidden = S.view !== v;
   if (S.view !== 'home') $('#home').innerHTML = '';
   if (S.view !== 'game') $('#game').innerHTML = '';
@@ -745,7 +859,7 @@ function select(id) {
   render();
   window.scrollTo({ top: 0 });
   const g = cur();
-  ensureNews(g); ensureAch(g); if (g?.source === 'steam') ensureShots(g);
+  ensureNews(g); ensureAch(g); ensureHltb(g); if (g?.source === 'steam') ensureShots(g);
 }
 function goHome() {
   const back = S.view === 'game';
@@ -870,15 +984,82 @@ document.addEventListener('click', async (e) => {
       return;
     }
     case 'epic-off': await invoke('epic_disconnect'); await loadAccounts(); renderModal(); return;
+    case 'rate': {
+      const r = el.getBoundingClientRect();
+      const val = +v - (e.clientX - r.left < r.width / 2 ? 0.5 : 0);
+      const cur0 = rating(g.id) || {};
+      const stars = cur0.stars === val ? 0 : val;
+      S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, stars, date: Math.floor(Date.now() / 1000) } };
+      saveUser(); renderGame(); return;
+    }
+    case 'heart': {
+      const cur0 = rating(g.id) || {};
+      S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, heart: !cur0.heart, date: cur0.date || Math.floor(Date.now() / 1000) } };
+      saveUser(); renderGame(); if (!cur0.heart) toast('Coup de cœur ♥'); return;
+    }
+    case 'save-review': {
+      const cur0 = rating(g.id) || {};
+      S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, review: $('#review-ta').value.trim(), date: Math.floor(Date.now() / 1000) } };
+      saveUser(); toast('Avis enregistré'); renderGame(); return;
+    }
+    case 'addgame': {
+      const id = await invoke('add_custom').catch((err) => { toast(String(err)); return null; });
+      if (!id) return;
+      toast('Jeu ajouté, récupération des images…');
+      await refresh();
+      openEdit(id);
+      return;
+    }
+    case 'editgame': S.menu = null; openEdit(g.id); return;
+    case 'eg-search': {
+      const q = $('#eg-q').value.trim(); S.edit.name = $('#eg-name').value; S.edit.q = q;
+      S.edit.hits = await invoke('steam_search', { q }).catch(() => []); renderModal(); return;
+    }
+    case 'eg-pick': S.edit.appid = +v; S.edit.name = $('#eg-name').value; renderModal(); return;
+    case 'eg-none': S.edit.appid = null; S.edit.name = $('#eg-name').value; renderModal(); return;
+    case 'eg-save': {
+      const name = $('#eg-name').value.trim() || S.edit.name;
+      await invoke('update_custom', { id: S.edit.id, name, steamAppid: S.edit.appid || null });
+      S.modal = null; renderModal(); toast('Jeu mis à jour'); await refresh(); if (S.view === 'game') renderGame(); return;
+    }
+    case 'eg-remove':
+      await invoke('remove_custom', { id: S.edit.id }); S.modal = null; renderModal();
+      S.games = S.games.filter((x) => x.id !== S.edit.id); toast('Jeu retiré'); goHome(); return;
+    case 'acc-mode': P.accentMode = v; savePrefs(); renderModal(); render(); return;
+    case 'acc-col': P.accentFixed = v; savePrefs(); renderModal(); render(); return;
+    case 'size': P.size = v; savePrefs(); renderModal(); render(); return;
+    case 'up-check': {
+      commitSettingsText();
+      const st = $('#up-state'); st.textContent = 'Recherche…';
+      try { S.update = await invoke('check_update'); st.textContent = S.update ? `Version ${S.update.version} disponible` : (S.user.updateUrl ? 'Ultimate est à jour.' : 'Renseigne d\'abord la source.'); renderModal(); renderUpdPill(); }
+      catch (err) { st.textContent = String(err); }
+      return;
+    }
+    case 'up-install': toast('Téléchargement de la mise à jour…'); invoke('install_update').catch((err) => toast(String(err))); return;
     case 'wp-mode': P.wp = v; savePrefs(); renderModal(); if (S.view === 'home') renderHome(); return;
     case 'wp-clear': await invoke('set_wallpaper', { dataUrl: '' }); wpPath = null; renderModal(); if (S.view === 'home') renderHome(); return;
   }
   if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
 });
 
+function openEdit(id) {
+  const g = S.games.find((x) => x.id === id);
+  if (!g) return;
+  S.edit = { id, name: g.name, exe: g.launch, appid: g.steamAppid || null, q: g.name, hits: null };
+  S.modal = 'editgame'; renderModal();
+  invoke('steam_search', { q: g.name }).then((h) => { if (S.edit?.id === id) { S.edit.hits = h; renderModal(); } }).catch(() => {});
+}
+function renderUpdPill() {
+  const b = $('#upd-pill'); if (!b) return;
+  b.hidden = !S.update;
+  if (S.update) b.innerHTML = `${icon.upd} Mise à jour ${esc(S.update.version)}`;
+}
+
 function commitSettingsText() {
   const d = $('#bk-dir');
   if (d && (d.value.trim() || null) !== (S.user.backupDir || null)) { S.user.backupDir = d.value.trim() || null; saveUser(); }
+  const u = $('#up-url');
+  if (u && (u.value.trim() || null) !== (S.user.updateUrl || null)) { S.user.updateUrl = u.value.trim() || null; saveUser(); }
 }
 
 let qTimer;
@@ -911,6 +1092,8 @@ document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.pref) { S.user[t.dataset.pref] = t.checked; saveUser(); }
   if (t.dataset.lp === 'big') setBig(t.checked);
+  else if (t.dataset.lp) { P[t.dataset.lp] = t.checked; savePrefs(); render(); }
+  if (t.id === 'acc-pick') { P.accentFixed = t.value; savePrefs(); renderModal(); render(); }
   if (t.id === 'wp-game') { P.wpGame = t.value; savePrefs(); if (S.view === 'home') renderHome(); }
   if (t.id === 'wp-file' && t.files[0]) {
     const f = t.files[0];
@@ -989,5 +1172,7 @@ function onLibrary(list) {
   loadSocial();
   invoke('free_games').then((f) => { S.free = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => {});
   invoke('steam_free_games').then((f) => { S.steamFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.steamFree = []; });
+  invoke('app_version').then((v) => { S.version = v; }).catch(() => {});
+  invoke('check_update').then((u) => { S.update = u; renderUpdPill(); if (u) toast(`Ultimate ${u.version} est disponible`); }).catch(() => {});
   invoke('gog_free_games').then((f) => { S.gogFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.gogFree = []; });
 })();

@@ -2,7 +2,7 @@
 
 use crate::Game;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
 
@@ -313,6 +313,85 @@ pub async fn epic_free(c: &Client) -> Vec<Free> {
         });
     }
     out
+}
+
+// ---------- store search (manual matching) ----------
+
+#[derive(Serialize)]
+pub struct Hit { id: u32, name: String, img: String }
+
+pub async fn steam_search_list(c: &Client, q: &str) -> Vec<Hit> {
+    let Ok(r) = c.get("https://store.steampowered.com/api/storesearch/").query(&[("term", q.trim()), ("l", "french"), ("cc", "FR")]).send().await else { return vec![] };
+    let Ok(j) = r.json::<Value>().await else { return vec![] };
+    j.get("items").and_then(|v| v.as_array()).map(|a| a.iter().take(10).filter_map(|it| Some(Hit {
+        id: it.get("id")?.as_u64()? as u32,
+        name: it.get("name")?.as_str()?.to_string(),
+        img: it.get("tiny_image").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    })).collect()).unwrap_or_default()
+}
+
+// ---------- HowLongToBeat ----------
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Hltb { pub main: f64, pub plus: f64, pub full: f64, pub url: String, pub name: String }
+
+static HLTB_TOKEN: std::sync::Mutex<Option<(String, std::time::Instant)>> = std::sync::Mutex::new(None);
+
+async fn hltb_token(c: &Client, fresh: bool) -> Option<String> {
+    if !fresh {
+        if let Some((t, at)) = HLTB_TOKEN.lock().unwrap().clone() {
+            if at.elapsed() < Duration::from_secs(1800) {
+                return Some(t);
+            }
+        }
+    }
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+    let j: Value = c.get(format!("https://howlongtobeat.com/api/search/site/init?t={ts}")).header("Referer", "https://howlongtobeat.com/").send().await.ok()?.json().await.ok()?;
+    let t = j.get("token")?.as_str()?.to_string();
+    *HLTB_TOKEN.lock().unwrap() = Some((t.clone(), std::time::Instant::now()));
+    Some(t)
+}
+
+/// Hours to beat: main story, main + extras, completionist. Ok(None) = game not found.
+pub async fn hltb(c: &Client, name: &str) -> Result<Option<Hltb>, String> {
+    let clean: String = name.replace(['™', '®', ':', '-', '–'], " ");
+    let terms: Vec<&str> = clean.split_whitespace().collect();
+    let body = serde_json::json!({
+        "searchType": "games", "searchTerms": terms, "searchPage": 1, "size": 8,
+        "searchOptions": { "games": { "userId": 0, "platform": "", "sortCategory": "popular", "rangeCategory": "main", "rangeTime": { "min": 0, "max": 0 },
+            "gameplay": { "perspective": "", "flow": "", "genre": "" }, "year": "", "modifier": "" },
+            "users": { "sortCategory": "postcount" }, "lists": { "sortCategory": "follows" }, "filter": "", "sort": 0, "randomizer": 0 },
+        "useCache": true
+    });
+    let mut tries = 0;
+    let j: Value = loop {
+        let tok = hltb_token(c, tries > 0).await.ok_or("HowLongToBeat injoignable")?;
+        let r = c.post("https://howlongtobeat.com/api/search/site").header("Referer", "https://howlongtobeat.com/").header("Origin", "https://howlongtobeat.com")
+            .header("x-auth-token", tok).json(&body).send().await.map_err(|e| e.to_string())?;
+        if r.status().as_u16() == 403 && tries == 0 {
+            tries += 1;
+            continue;
+        }
+        if r.status().as_u16() == 429 {
+            return Err("HowLongToBeat : trop de recherches, réessaie dans une minute".into());
+        }
+        break r.json().await.map_err(|e| e.to_string())?;
+    };
+    let want = norm(name);
+    let items = j.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let pick = items.iter().find(|g| g.get("game_name").and_then(|v| v.as_str()).map(norm).as_deref() == Some(want.as_str()))
+        .or_else(|| items.iter().find(|g| g.get("game_alias").and_then(|v| v.as_str()).map(|a| a.split(',').any(|x| norm(x) == want)).unwrap_or(false)))
+        .or_else(|| items.first().filter(|g| g.get("game_name").and_then(|v| v.as_str()).map(|n| { let n = norm(n); n.starts_with(&want) || want.starts_with(&n) }).unwrap_or(false)));
+    Ok(pick.map(|g| {
+        let h = |k: &str| (g.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) / 3600.0 * 10.0).round() / 10.0;
+        Hltb {
+            main: h("comp_main"),
+            plus: h("comp_plus"),
+            full: h("comp_100"),
+            url: format!("https://howlongtobeat.com/game/{}", g.get("game_id").and_then(|v| v.as_u64()).unwrap_or(0)),
+            name: g.get("game_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }
+    }))
 }
 
 #[cfg(test)]

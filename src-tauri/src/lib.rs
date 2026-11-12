@@ -72,7 +72,8 @@ fn save<T: Serialize>(p: &PathBuf, v: &T) {
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn open_target(t: &str) -> Result<(), String> {
-    if t.contains("://") {
+    let ext = PathBuf::from(t).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if t.contains("://") || (!t.contains("://") && ["lnk", "url", "bat"].contains(&ext.as_str())) {
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", t])
             .creation_flags(CREATE_NO_WINDOW)
@@ -95,7 +96,7 @@ fn get_cached(st: State<AppState>) -> Vec<Game> {
 }
 
 fn keep_meta(g: &mut Game, o: &Game) {
-    if o.enriched && o.meta_v == meta::META_V {
+    if o.enriched && o.meta_v == meta::META_V && (g.source != "pc" || g.steam_appid == o.steam_appid) {
         g.meta_v = o.meta_v;
         g.steam_appid = g.steam_appid.or(o.steam_appid);
         if !o.name.is_empty() && g.name.starts_with("Jeu Steam ") {
@@ -130,6 +131,7 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
     let st = app.state::<AppState>();
     let http = st.http.clone();
     let mut scanned = tauri::async_runtime::spawn_blocking(scan::scan_all).await.map_err(|e| e.to_string())?;
+    scanned.extend(custom_games(&st));
 
     // Steam Web API (if a key is set): every owned game + exact playtime
     if let (Some(key), Some(sid)) = (accounts::secret("steam_key"), scan::steam_id()) {
@@ -630,10 +632,13 @@ pub struct User {
     backup_dir: Option<String>,
     seen_free: Vec<String>,
     seen_deals: Vec<String>,
+    /// Letterboxd-style ratings: id -> { stars (0.5..5), heart, review, date }
+    ratings: HashMap<String, serde_json::Value>,
+    update_url: Option<String>,
 }
 impl Default for User {
     fn default() -> Self {
-        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![] }
+        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None }
     }
 }
 
@@ -665,17 +670,18 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 fn autostart_on() -> bool {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-    RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_KEY).and_then(|k| k.get_value::<String, _>("Launcher")).is_ok()
+    RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_KEY).and_then(|k| k.get_value::<String, _>("Ultimate")).is_ok()
 }
 
 fn set_autostart(on: bool) -> Result<(), String> {
     use winreg::{enums::{HKEY_CURRENT_USER, KEY_SET_VALUE}, RegKey};
     let k = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE).map_err(|e| e.to_string())?;
+    let _ = k.delete_value("Launcher"); // old name
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        k.set_value("Launcher", &format!("\"{}\" --hidden", exe.display())).map_err(|e| e.to_string())
+        k.set_value("Ultimate", &format!("\"{}\" --hidden", exe.display())).map_err(|e| e.to_string())
     } else {
-        let _ = k.delete_value("Launcher");
+        let _ = k.delete_value("Ultimate");
         Ok(())
     }
 }
@@ -770,7 +776,7 @@ fn open_path(path: String) -> Result<(), String> {
 fn backup_dir(st: &AppState) -> PathBuf {
     user(st).backup_dir.map(PathBuf::from).unwrap_or_else(|| {
         let docs = std::env::var("USERPROFILE").map(|h| PathBuf::from(h).join("Documents")).unwrap_or_else(|_| st.dir.clone());
-        docs.join("Launcher - Sauvegardes")
+        docs.join("Ultimate - Sauvegardes")
     })
 }
 
@@ -863,6 +869,165 @@ async fn watch_deals(app: AppHandle) {
     }
 }
 
+// ---------- games added by hand (.exe) ----------
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Custom {
+    id: String,
+    name: String,
+    exe: String,
+    steam_appid: Option<u32>,
+}
+
+fn customs(st: &AppState) -> Vec<Custom> {
+    load(&st.dir.join("custom.json"))
+}
+
+fn custom_games(st: &AppState) -> Vec<Game> {
+    customs(st).into_iter().map(|c| {
+        let dir = PathBuf::from(&c.exe).parent().map(|p| p.to_string_lossy().to_string());
+        Game {
+            id: c.id,
+            source: "pc".into(),
+            name: c.name,
+            steam_appid: c.steam_appid,
+            launch: c.exe.clone(),
+            install_path: dir,
+            installed: PathBuf::from(&c.exe).exists(),
+            ..Default::default()
+        }
+    }).collect()
+}
+
+/// Nice default name from the file: "D:\Games\Hollow Knight\hollow_knight.exe" -> "Hollow Knight".
+fn guess_name(exe: &str) -> String {
+    let p = PathBuf::from(exe);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let generic = ["game", "launcher", "start", "play", "main", "app", "client", "win64", "shipping"];
+    let low = stem.to_lowercase();
+    let pick = if generic.iter().any(|g| low == *g || low.ends_with("-win64-shipping") || low.starts_with("unitycrash")) {
+        p.parent().and_then(|d| d.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or(stem)
+    } else {
+        stem
+    };
+    let spaced: String = pick.replace(['_', '.'], " ").split_whitespace().collect::<Vec<_>>().join(" ");
+    // "HollowKnight" -> "Hollow Knight"
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for ch in spaced.chars() {
+        if ch.is_uppercase() && prev_lower {
+            out.push(' ');
+        }
+        prev_lower = ch.is_lowercase();
+        out.push(ch);
+    }
+    out
+}
+
+#[tauri::command]
+async fn add_custom(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app.dialog().file().set_title("Choisir le jeu à ajouter").add_filter("Jeux et raccourcis", &["exe", "lnk", "url", "bat"]).blocking_pick_file();
+    let Some(path) = picked.and_then(|p| p.into_path().ok()) else { return Ok(None) };
+    let exe = path.to_string_lossy().to_string();
+    let st = app.state::<AppState>();
+    let mut list = customs(&st);
+    if let Some(c) = list.iter().find(|c| c.exe.eq_ignore_ascii_case(&exe)) {
+        return Ok(Some(c.id.clone()));
+    }
+    let name = guess_name(&exe);
+    let appid = meta::search_steam(&st.http.clone(), &name).await;
+    let id = format!("pc:{:x}", exe.to_lowercase().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)));
+    list.push(Custom { id: id.clone(), name, exe, steam_appid: appid });
+    save(&st.dir.join("custom.json"), &list);
+    Ok(Some(id))
+}
+
+#[tauri::command]
+fn update_custom(st: State<AppState>, id: String, name: String, steam_appid: Option<u32>) -> Result<(), String> {
+    let mut list = customs(&st);
+    let c = list.iter_mut().find(|c| c.id == id).ok_or("Jeu introuvable")?;
+    c.name = name.trim().to_string();
+    c.steam_appid = steam_appid;
+    save(&st.dir.join("custom.json"), &list);
+    // force fresh metadata for this one
+    if let Some(g) = st.lib.lock().unwrap().iter_mut().find(|g| g.id == id) {
+        g.enriched = false;
+        g.meta_v = 0;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_custom(st: State<AppState>, id: String) {
+    let list: Vec<Custom> = customs(&st).into_iter().filter(|c| c.id != id).collect();
+    save(&st.dir.join("custom.json"), &list);
+    st.lib.lock().unwrap().retain(|g| g.id != id);
+}
+
+#[tauri::command]
+async fn steam_search(app: AppHandle, q: String) -> Result<serde_json::Value, String> {
+    let http = app.state::<AppState>().http.clone();
+    Ok(serde_json::to_value(meta::steam_search_list(&http, &q).await).unwrap_or_default())
+}
+
+// ---------- HowLongToBeat ----------
+
+#[tauri::command]
+async fn hltb(app: AppHandle, id: String) -> Result<Option<meta::Hltb>, String> {
+    let st = app.state::<AppState>();
+    let p = st.dir.join("hltb.json");
+    let mut cache: HashMap<String, Option<meta::Hltb>> = load(&p);
+    if let Some(v) = cache.get(&id) {
+        return Ok(v.clone());
+    }
+    let name = st.lib.lock().unwrap().iter().find(|g| g.id == id).map(|g| g.name.clone()).ok_or("Jeu introuvable")?;
+    let r = meta::hltb(&st.http.clone(), &name).await?;
+    cache.insert(id, r.clone());
+    save(&p, &cache);
+    Ok(r)
+}
+
+// ---------- self-update ----------
+
+#[derive(Serialize)]
+struct UpdateInfo {
+    version: String,
+    current: String,
+    notes: Option<String>,
+}
+
+fn update_url(st: &AppState) -> Option<String> {
+    user(st).update_url.filter(|u| u.starts_with("https://"))
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let Some(url) = update_url(&app.state::<AppState>()) else { return Ok(None) };
+    let up = app.updater_builder().endpoints(vec![url.parse().map_err(|e: url::ParseError| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
+    match up.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(Some(UpdateInfo { version: u.version.clone(), current: u.current_version.clone(), notes: u.body.clone() })),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let url = update_url(&app.state::<AppState>()).ok_or("Aucune source de mise à jour configurée")?;
+    let up = app.updater_builder().endpoints(vec![url.parse().map_err(|e: url::ParseError| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
+    let u = up.check().await.map_err(|e| e.to_string())?.ok_or("Déjà à jour")?;
+    u.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart();
+}
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -877,6 +1042,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("img", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             let uri = req.uri().to_string();
@@ -927,7 +1094,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().expect("icon"))
-                .tooltip("Launcher")
+                .tooltip("Ultimate")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, ev| match ev.id.as_ref() {
@@ -949,7 +1116,7 @@ pub fn run() {
             tauri::async_runtime::spawn(watch_deals(app.handle().clone()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }
