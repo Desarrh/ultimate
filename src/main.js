@@ -9,7 +9,7 @@ const S = {
   acc: { steamKey: false, steamId: null, epic: null },
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
-  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', achShow: 9, homeDirty: false, trophyDates: {},
+  view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', layout: 'grid', layoutPinned: false, achShow: 9, homeDirty: false, trophyDates: {},
   tab: 'ach', achF: 'all', openNews: 0, menu: null, sub: null, showSoft: false, busy: false, modal: null, homeY: 0,
 };
 const $ = (s) => document.querySelector(s);
@@ -157,25 +157,67 @@ function cover(g) {
       ${memo || isFav(g) ? `<span class="memob">${isFav(g) ? `<span style="color:#FFD45C">${icon.star(true)}</span>` : icon.pen}</span>` : ''}
       ${p !== null ? `<span class="pb"><span style="width:${p}%;background:${p === 100 ? '#6EE7A8' : g.accent || '#fff'}"></span></span>` : ''}
     </span>
-    <span class="meta"><span class="nm">${esc(g.name)}</span><span class="h">${[g.playtimeMin ? fmtH(g.playtimeMin) : '', S.achsum[g.id] ? `${S.achsum[g.id][0]}/${S.achsum[g.id][1]}` : '', rating(g.id)?.stars ? `<span class="rt">${starTxt(rating(g.id).stars)}</span>` : ''].filter(Boolean).join(' · ') || '&nbsp;'}</span></span>
+    <span class="meta"><span class="nm">${esc(g.name)}</span>${rating(g.id)?.stars ? `<span class="rt">${starTxt(rating(g.id).stars)}</span>` : ''}</span>
   </button>`;
 }
 
 // ---------- virtual grid (only rows on screen exist in the DOM) ----------
 
 const VG = { list: [], cols: 1, rowH: 300, first: -1, last: -1 };
+
+function listRow(g) {
+  const a = S.achsum[g.id];
+  const p = a && a[1] ? Math.round((a[0] / a[1]) * 100) : null;
+  const icons = (S.ach[g.id]?.list || []).filter((x) => x.unlocked).sort((x, y) => (y.unlockTime || 0) - (x.unlockTime || 0));
+  const r = rating(g.id);
+  return `<button class="lrow${g.installed ? '' : ' notinst'}" data-act="sel" data-id="${esc(g.id)}" style="--g:${g.accent || '#5B9DFF'}">
+    <span class="limg" style="background:${g.deep || '#1A1A20'}">${g.hero || g.cover ? `<img src="${esc(th(g.hero || g.cover, 600))}" alt="" onerror="this.remove()">` : ''}</span>
+    <span class="linfo">
+      <span class="ltitle"><b class="nm">${esc(g.name)}</b>${p === 100 ? `<span class="lcrown" title="100%">${icon.crown}</span>` : ''}${r?.stars ? `<span class="rt">${starTxt(r.stars)}</span>` : ''}${g.source !== 'steam' ? `<span class="srcb">${SRC[g.source].toUpperCase()}</span>` : ''}</span>
+      <span class="lstats"><span><span class="k">TEMPS DE JEU</span> ${fmtH(g.playtimeMin)}</span><span><span class="k">DERNIÈRE SESSION</span> ${esc(ago(g.lastPlayed))}</span></span>
+      ${a ? `<span class="lach"><span class="k">SUCCÈS</span><span class="ln">${a[0]}/${a[1]}</span></span>
+        <span class="lbar"><span style="width:${p}%;background:${p === 100 ? '#F5C84C' : 'var(--g)'}"></span></span>` : '<span class="lach muted">—</span>'}
+    </span>
+    <span class="licons" data-ic="${esc(g.id)}">${icons.slice(0, 5).map((x) => `<img src="${esc(th(x.icon, 80))}" alt="" title="${esc(x.name)}" onerror="this.remove()">`).join('')}${icons.length > 5 ? `<span class="lmore">+${icons.length - 5}</span>` : ''}</span>
+  </button>`;
+}
+// fetch the unlocked-achievement icons of rows on screen, a few at a time
+const iconQueue = []; let iconBusy = 0;
+function rowIcons(g) {
+  if (!S.achsum[g.id] || !S.achsum[g.id][0] || S.ach[g.id] !== undefined || iconQueue.includes(g.id)) return;
+  iconQueue.push(g.id); pumpIcons();
+}
+function pumpIcons() {
+  while (iconBusy < 3 && iconQueue.length) {
+    const id = iconQueue.shift(); iconBusy++;
+    S.ach[id] = null;
+    invoke('achievements', { id }).then((l) => { S.ach[id] = l; }).catch(() => { S.ach[id] = { list: [] }; }).finally(() => {
+      iconBusy--;
+      const slot = document.querySelector(`.licons[data-ic="${CSS.escape(id)}"]`);
+      const g = S.games.find((x) => x.id === id);
+      if (slot && g) slot.outerHTML = listRow(g).match(/<span class="licons"[\s\S]*?<\/span>\s*<\/button>/)[0].replace(/<\/button>$/, '');
+      pumpIcons();
+    });
+  }
+}
 function mountGrid(list) {
   VG.list = list; VG.first = VG.last = -1;
   if (!$('#vgrid')) return;
   layoutGrid(); paintGrid(true);
 }
+const isList = () => S.layout === 'list';
 function layoutGrid() {
   const host = $('#vgrid'); if (!host) return;
   const W = host.clientWidth || innerWidth - 112;
+  if (isList()) {
+    VG.cols = 1; VG.cellH = 148; VG.rowH = VG.cellH + 12;
+    host.style.height = `${Math.max(0, VG.list.length * VG.rowH - 12)}px`;
+    return;
+  }
   const min = ({ S: 118, M: 150, L: 200 }[P.size] || 150) + (P.big ? 50 : 0); const gap = 20; const rowGap = 24;
   VG.cols = Math.max(1, Math.floor((W + gap) / (min + gap)));
   const itemW = (W - gap * (VG.cols - 1)) / VG.cols;
-  VG.cellH = Math.ceil(itemW * 1.5 + 8 + 42);
+  VG.cellH = Math.ceil(itemW * 1.5 + 8 + 22);
   VG.rowH = VG.cellH + rowGap;
   host.style.height = `${Math.max(0, Math.ceil(VG.list.length / VG.cols) * VG.rowH - rowGap)}px`;
 }
@@ -188,6 +230,11 @@ function paintGrid(force) {
   if (!force && first === VG.first && last === VG.last) return;
   VG.first = first; VG.last = last;
   const items = VG.list.slice(first * VG.cols, last * VG.cols);
+  if (isList()) {
+    host.innerHTML = items.length ? `<div class="lgrid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-auto-rows:${VG.cellH}px">${items.map(listRow).join('')}</div>` : '';
+    items.forEach(rowIcons);
+    return;
+  }
   host.innerHTML = items.length ? `<div class="grid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-template-columns:repeat(${VG.cols},minmax(0,1fr));grid-auto-rows:${VG.cellH}px">${items.map(cover).join('')}</div>` : '';
 }
 addEventListener('scroll', () => paintGrid(), { passive: true });
@@ -278,6 +325,8 @@ function dealsRow() {
     </div></section>`;
 }
 
+/** Each sort gets its natural layout: list for achievements, grid otherwise (the toggle overrides it until the next sort). */
+function autoLayout() { S.layout = ['achn', 'pct'].includes(S.sort) ? 'list' : 'grid'; }
 function sortMenu() {
   const slot = $('#sort-menu'); if (!slot) return;
   $('[data-menu="sort"]')?.setAttribute('aria-expanded', String(S.menu === 'sort'));
@@ -389,6 +438,10 @@ function paintHome() {
         <div class="row2">
           ${isCustom(col) ? `<button class="btn2" data-act="delcol" data-v="${esc(col)}">Supprimer la collection</button>` : ''}
           <button class="glass pillbtn" data-act="addgame" title=".exe, .lnk">+ Jeu</button>
+          <div class="glass seg vt" role="group" aria-label="Affichage">
+            <button data-act="layout" data-v="grid" aria-pressed="${!isList()}" aria-label="Grille">${I('<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>', 16)}</button>
+            <button data-act="layout" data-v="list" aria-pressed="${isList()}" aria-label="Liste">${I('<path d="M4 6h16M4 12h16M4 18h16"/>', 16)}</button>
+          </div>
           <div class="anchor">
             <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
               ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong> ${arrow()}</button>
@@ -482,7 +535,7 @@ function achPanel(g) {
       <div class="fseg glass" role="group" aria-label="Filtrer">${F.map(([k, x]) => `<button data-act="achf" data-v="${k}" aria-pressed="${S.achF === k}">${x}</button>`).join('')}</div>
     </div>${note}
     <div class="achs">${l.slice(0, S.achShow).map((x) => `<div class="ach${x.unlocked ? ' on' : ''}">
-        ${x.icon ? `<img src="${esc(x.icon)}" alt="" loading="lazy">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
+        ${x.icon ? `<img src="${esc(th(x.icon, 104))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
         <span class="t"><b>${esc(x.name)}</b><span>${esc(x.desc)}</span></span>
         <span class="r">${x.rarity != null ? (x.rarity < 10 ? `<span class="rare">${dec(x.rarity)}${PS}%</span>` : `${Math.round(x.rarity)}${PS}%`) : ''}<span>${x.unlocked ? (x.unlockTime ? day(x.unlockTime) : 'Débloqué') : 'Verrouillé'}</span></span>
       </div>`).join('') || '<div class="empty">Rien dans ce filtre.</div>'}</div>
@@ -1000,9 +1053,10 @@ document.addEventListener('click', async (e) => {
     case 'src': S.src = v; S.col = 'Tout'; if (S.view !== 'home') goHome(); else render(); return;
     case 'col': S.col = v; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'gocol': S.col = v; S.view = 'home'; render(); $('#lib')?.scrollIntoView({ behavior: 'smooth' }); return;
-    case 'sort': S.sort = v; S.dir = 'desc'; renderHome(); return;
+    case 'sort': S.sort = v; S.dir = 'desc'; autoLayout(); renderHome(); return;
+    case 'layout': S.layout = v; renderHome(); return;
     case 'sortdir': S.dir = v; renderHome(); return;
-    case 'kpi': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.col = 'Tout'; renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
+    case 'kpi': if (S.sort === v) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = v; S.dir = 'desc'; } S.col = 'Tout'; autoLayout(); renderHome(); $('#lib')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
     case 'trophy': S.view = 'trophy'; S.homeY = window.scrollY; render(); window.scrollTo({ top: 0 }); loadTrophyDates(); return;
     case 'soft': S.showSoft = !S.showSoft; renderHome(); return;
     case 'refresh': refresh(); return;

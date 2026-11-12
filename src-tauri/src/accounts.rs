@@ -95,7 +95,8 @@ pub async fn steam_achievements(c: &Client, key: &str, sid: u64, appid: u32) -> 
         Some(Ach {
             name: s("displayName"),
             desc: if hidden && !unlocked { "Succès caché".into() } else { s("description") },
-            icon: if unlocked { s("icon") } else { s("icongray") },
+            // the old akamai host is dead for some apps: use the current Steam CDN
+            icon: (if unlocked { s("icon") } else { s("icongray") }).replace("steamcdn-a.akamaihd.net", "cdn.fastly.steamstatic.com"),
             unlocked,
             unlock_time: t,
             rarity: rare.get(&api).copied(),

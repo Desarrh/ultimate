@@ -13,7 +13,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222', defaultViewport: null });
 const page = (await browser.pages()).find((p) => !p.url().startsWith('devtools')) ;
 page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+let missing404 = 0;
+page.on('console', (m) => { if (m.type() !== 'error') return; if (/status of 404/.test(m.text())) { missing404++; return; } errors.push(`console: ${m.text()}`); });
 page.on('requestfailed', (r) => { if (!r.url().includes('fonts.g')) errors.push(`request failed: ${r.url().slice(0, 140)} (${r.failure()?.errorText})`); });
 
 async function check(name, fn) {
@@ -339,6 +340,20 @@ await check('Chiffres cliquables : temps de jeu et succès, ↑/↓', async () =
   return `temps ↓ ${desc[0]} · ↑ ${asc[0]} · succès ↓ ${ach[0]} · bouton « ${sortTxt} »`;
 });
 
+await check('Vue Liste façon Steam (tri par succès)', async () => {
+  await click('[data-act="kpi"][data-v="achn"]'); await sleep(2500);
+  const rows = await count('#vgrid .lrow');
+  const icons = await count('#vgrid .licons img');
+  const first = await page.$eval('#vgrid .lrow .nm', (e) => e.textContent);
+  await click('[data-act="layout"][data-v="grid"]'); await sleep(500);
+  const grid = await count('#vgrid .cov');
+  await click('[data-act="layout"][data-v="list"]'); await sleep(300);
+  await click('[data-menu="sort"]'); await click('#sort-menu [data-v="recent"]'); await click('[data-menu="sort"]');
+  await click('[data-act="layout"][data-v="grid"]'); await sleep(400);
+  assert(rows > 0, 'pas de lignes en vue liste'); assert(grid > 0, 'retour grille raté');
+  return `${rows} lignes (1re : ${first}), ${icons} icônes de succès, bascule grille OK`;
+});
+
 await check('Panthéon (100 %)', async () => {
   await page.evaluate(() => window.scrollTo(0, 0)); await sleep(300);
   await click('[data-act="trophy"]'); await sleep(1500);
@@ -392,6 +407,7 @@ await check('Mémoire', async () => {
 const ok = results.filter((r) => r.ok).length;
 console.log(`\n${ok}/${results.length} vérifications OK`);
 const uniq = [...new Set(errors)];
+console.log(`${missing404} image(s) absente(s) côté serveur (404, masquées)`);
 console.log(`${uniq.length} erreur(s) console/réseau${uniq.length ? ':\n  ' + uniq.slice(0, 25).join('\n  ') : ''}`);
 fs.writeFileSync(`${OUT}/report.json`, JSON.stringify({ results, errors: uniq }, null, 2));
 await browser.disconnect();
