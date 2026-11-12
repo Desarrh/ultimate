@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LANG, LOCALE, T, dec, setLang, startI18n } from './i18n.js';
+const PS = LANG === 'en' ? '' : ' '; // space before % in French only
 
 const S = {
   games: [], memos: {}, news: {}, hltb: {}, version: '', update: null, edit: null, free: null, steamFree: null, gogFree: null, achsum: {}, ach: {}, shots: {}, history: {},
@@ -43,19 +45,19 @@ const coverSrc = (g) => th(g.cover, TW());
 const fmtH = (m) => {
   if (!m) return '—';
   const h = m / 60;
-  return h < 10 ? `${h.toFixed(1).replace('.', ',')} h` : `${Math.round(h).toLocaleString('fr-FR')} h`;
+  return h < 10 ? `${dec(h)} h` : `${Math.round(h).toLocaleString(LOCALE)} h`;
 };
-const size = (b) => (b ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : '—');
+const size = (b) => (b ? `${dec(b / 1e9)} ${T('Go', 'GB')}` : '—');
 function ago(ts) {
-  if (!ts) return 'Jamais';
+  if (!ts) return T('Jamais', 'Never');
   const d = (Date.now() / 1000 - ts) / 86400;
-  if (d < 1) return "Aujourd'hui";
-  if (d < 2) return 'Hier';
-  if (d < 7) return `Il y a ${Math.floor(d)} j`;
-  if (d < 30) return `Il y a ${Math.floor(d / 7)} sem.`;
-  return new Date(ts * 1000).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  if (d < 1) return T("Aujourd'hui", 'Today');
+  if (d < 2) return T('Hier', 'Yesterday');
+  if (d < 7) return T(`Il y a ${Math.floor(d)} j`, `${Math.floor(d)}d ago`);
+  if (d < 30) return T(`Il y a ${Math.floor(d / 7)} sem.`, `${Math.floor(d / 7)}w ago`);
+  return new Date(ts * 1000).toLocaleDateString(LOCALE, { month: 'long', year: 'numeric' });
 }
-const day = (ts) => new Date(ts * 1000).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+const day = (ts) => new Date(ts * 1000).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' });
 const I = (d, w = 18) => `<svg aria-hidden="true" width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const icon = {
   play: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>',
@@ -72,7 +74,7 @@ const icon = {
 
 const cur = () => S.games.find((g) => g.id === S.sel) || null;
 const rating = (id) => S.user.ratings?.[id] || null;
-const starTxt = (v) => (v ? `★ ${String(v).replace('.', ',')}` : '');
+const starTxt = (v) => (v ? `★ ${dec(v)}` : '');
 function starSvg(fill, i) {
   const d = 'M12 2.6l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.4l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z';
   return `<svg aria-hidden="true" width="30" height="30" viewBox="0 0 24 24"><defs><clipPath id="sh${i}"><rect x="0" y="0" width="${fill * 24}" height="24"/></clipPath></defs>
@@ -233,9 +235,9 @@ function filtered() {
   let l = visible().filter((g) => (S.src === 'all' || g.source === S.src) && inCol(g, S.col));
   if (q) l = l.filter((g) => g.name.toLowerCase().includes(q) || g.tags.some((t) => lbl(t).toLowerCase().includes(q)) || (S.memos[g.id] || '').toLowerCase().includes(q));
   const by = {
-    recent: (a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin || a.name.localeCompare(b.name, 'fr'),
+    recent: (a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin || a.name.localeCompare(b.name, LOCALE),
     hours: (a, b) => b.playtimeMin - a.playtimeMin,
-    az: (a, b) => a.name.localeCompare(b.name, 'fr'),
+    az: (a, b) => a.name.localeCompare(b.name, LOCALE),
     pct: (a, b) => (pct(b.id) ?? -1) - (pct(a.id) ?? -1),
     rating: (a, b) => (rating(b.id)?.stars || 0) - (rating(a.id)?.stars || 0) || b.playtimeMin - a.playtimeMin,
     size: (a, b) => b.size - a.size,
@@ -253,20 +255,20 @@ function freeItems() {
   const gog = (S.gogFree || []).map((x) => ({ store: 'GOG', name: x.title, img: x.image, url: x.url, until: '', upcoming: false, owned: owned('gog', x.title) }));
   return [...epic, ...steam, ...gog];
 }
-const untilTxt = (x) => (x.until ? `${x.upcoming ? 'À partir du' : "Jusqu'au"} ${new Date(x.until).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : '');
+const untilTxt = (x) => (x.until ? `${x.upcoming ? T('Dès le', 'From') : T("Jusqu'au", 'Until')} ${new Date(x.until).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' })}` : '');
 
 function dealsRow() {
   const w = (S.wishlist || []).filter((d) => d.discount > 0).slice(0, 12);
   const free = freeItems().filter((x) => !x.upcoming).sort((a, b) => a.owned - b.owned);
   if (!w.length && !free.length) return '';
   return `<section class="deals-wrap">
-    <div class="cols-head"><div><h2>Bons plans</h2><span class="muted">Jeux offerts sur Epic, Steam et GOG, et promos de ta liste de souhaits Steam</span></div></div>
+    <div class="cols-head"><div><h2>Bons plans</h2></div></div>
     <div class="deals">
       ${free.map((d) => `<button class="deal glass${d.owned ? ' owned' : ''}" data-act="url" data-v="${esc(d.url)}">
         <span class="dimg">${d.img ? `<img src="${esc(th(d.img, 360))}" alt="" loading="lazy">` : ''}<span class="store">${d.store}</span></span>
         <span class="dt"><b>${esc(d.name)}</b>${d.owned ? '<span class="tagown">DÉJÀ À TOI</span>' : '<span class="tagfree">GRATUIT</span>'}<span class="muted" style="font-size:12px">${esc(untilTxt(d))}</span></span></button>`).join('')}
       ${w.map((d) => `<button class="deal glass" data-act="url" data-v="https://store.steampowered.com/app/${d.appid}">
-        <span class="dimg">${d.cover ? `<img src="${esc(th(d.cover, 360))}" alt="" loading="lazy">` : ''}<span class="off">-${d.discount} %</span></span>
+        <span class="dimg">${d.cover ? `<img src="${esc(th(d.cover, 360))}" alt="" loading="lazy">` : ''}<span class="off">-${d.discount}${PS}%</span></span>
         <span class="dt"><b>${esc(d.name)}</b><span><s class="muted">${esc(d.original)}</s> <strong>${esc(d.price)}</strong></span></span></button>`).join('')}
     </div></section>`;
 }
@@ -278,7 +280,7 @@ function sortMenu() {
     <span class="mh">TRIER PAR</span>
     ${SORTS.map(([k, l]) => `<button class="mi" role="menuitemradio" aria-checked="${S.sort === k}" data-act="sort" data-v="${k}">${l}${S.sort === k ? icon.check : ''}</button>`).join('')}
     <div class="sep"></div><span class="mh">AFFICHER</span>
-    <button class="mi" data-act="soft">${S.showSoft ? 'Masquer' : 'Afficher'} les apps dans « Tout »<span class="r">${S.games.filter(isSoft).length}</span></button>
+    <button class="mi" data-act="soft">${S.showSoft ? 'Masquer les apps' : 'Afficher les apps'}<span class="r">${S.games.filter(isSoft).length}</span></button>
   </div>` : '';
 }
 function optsSlot() {
@@ -321,15 +323,15 @@ function paintHome() {
   $('#home').innerHTML = `
     <section class="home-head">
       <div>
-        <h1>Ta bibliothèque</h1>
-        <div class="sub">${all.length} jeux · ${all.filter((g) => g.installed).length} installés${updates ? ` · <button class="alink" data-act="col" data-v="Mises à jour" style="min-height:0;display:inline">${updates} mise${updates > 1 ? 's' : ''} à jour</button>` : ''}${S.busy ? ' · mise à jour…' : ''}</div>
+        <h1>Bibliothèque</h1>
+        <div class="sub">${all.length} ${T('jeux', 'games')} · ${all.filter((g) => g.installed).length} ${T('installés', 'installed')}${updates ? ` · <button class="alink" data-act="col" data-v="Mises à jour" style="min-height:0;display:inline">${updates} ${T('MAJ', updates > 1 ? 'updates' : 'update')}</button>` : ''}${S.busy ? ' · …' : ''}</div>
       </div>
       <div class="kpis glass">
-        <div><span class="k">TEMPS DE JEU TOTAL</span><span class="v">${fmtH(total)}</span>
+        <div><span class="k">TEMPS DE JEU</span><span class="v">${fmtH(total)}</span>
           <span class="muted" style="font-size:12px">${bySrc.map(([k, v]) => `${SRC[k]} ${fmtH(v)}`).join(' · ') || '—'}</span></div>
-        <div><span class="k">SUCCÈS</span><span class="v">${tot ? un.toLocaleString('fr-FR') : '—'}${tot ? `<small>/ ${tot.toLocaleString('fr-FR')}</small>` : ''}</span>
-          ${tot ? `<span class="bar"><span style="width:${Math.round((un / tot) * 100)}%"></span></span>` : `<button class="alink" data-act="settings" style="min-height:0">Relier Steam / Epic →</button>`}</div>
-        <div><span class="k">JEUX À 100 %</span><span class="v">${tot ? perfect : '—'}</span></div>
+        <div><span class="k">SUCCÈS</span><span class="v">${tot ? un.toLocaleString(LOCALE) : '—'}${tot ? `<small>/ ${tot.toLocaleString(LOCALE)}</small>` : ''}</span>
+          ${tot ? `<span class="bar"><span style="width:${Math.round((un / tot) * 100)}%"></span></span>` : `<button class="alink" data-act="settings" style="min-height:0">Relier →</button>`}</div>
+        <div><span class="k">100 %</span><span class="v">${tot ? perfect : '—'}</span></div>
       </div>
     </section>
 
@@ -339,8 +341,8 @@ function paintHome() {
       <span class="in">
         ${last.logo ? `<img class="lg" src="${esc(th(last.logo, 640))}" alt="${esc(last.name)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'nm',textContent:${esc(JSON.stringify(last.name))}}))">` : `<span class="nm">${esc(last.name)}</span>`}
         <span class="meta">
-          <span class="k"><span class="dot" style="background:${last.accent};box-shadow:0 0 12px ${last.accent}"></span>REPRENDRE · ${esc(ago(last.lastPlayed).toUpperCase())}</span>
-          <span>${fmtH(last.playtimeMin)} de jeu${pct(last.id) !== null ? ` · ${pct(last.id)} % des succès` : ''}</span>
+          <span class="k"><span class="dot" style="background:${last.accent};box-shadow:0 0 12px ${last.accent}"></span>${esc(ago(last.lastPlayed).toUpperCase())}</span>
+          <span>${fmtH(last.playtimeMin)} ${pct(last.id) !== null ? ` · ${pct(last.id)}${PS}%` : ''}</span>
           ${lastMemo ? `<span class="memo">✎ ${esc(lastMemo)}</span>` : ''}
         </span>
         <span class="play sm go" data-act="play-id" data-id="${esc(last.id)}" style="background:${last.accent}">${last.installed ? icon.play + 'Jouer' : icon.dl + 'Installer'}</span>
@@ -348,8 +350,8 @@ function paintHome() {
     </button>` : ''}
 
     <section class="cols-wrap">
-      <div class="cols-head"><div><h2>Collections</h2><span class="muted">Automatiques (tags Steam) et les tiennes</span></div>
-        <button class="btn2" data-act="newcol">+ Nouvelle collection</button></div>
+      <div class="cols-head"><div><h2>Collections</h2></div>
+        <button class="btn2" data-act="newcol">+ Collection</button></div>
       <div class="cols" role="group" aria-label="Collections">
         ${cols.map((x) => `<button class="col" data-act="col" data-v="${esc(x.c)}" aria-pressed="${x.c === col}" style="--c:${catColor(x.c)}">
           <span class="fan">
@@ -366,10 +368,10 @@ function paintHome() {
 
     <section class="lib" id="lib">
       <div class="sec-head">
-        <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(lbl(col))}</h2><span class="muted">${list.length} jeu${list.length > 1 ? 'x' : ''}${S.q ? ` pour « ${esc(S.q)} »` : ''}</span></div>
+        <div><h2>${col === 'Tout' ? 'Tous les jeux' : esc(lbl(col))}</h2><span class="muted">${list.length}${S.q ? ` · « ${esc(S.q)} »` : ''}</span></div>
         <div class="row2">
           ${isCustom(col) ? `<button class="btn2" data-act="delcol" data-v="${esc(col)}">Supprimer la collection</button>` : ''}
-          <button class="btn2" data-act="addgame" title="Ajouter un jeu hors launcher (.exe, raccourci)">+ Ajouter un jeu</button>
+          <button class="btn2" data-act="addgame" title=".exe, .lnk">+ Jeu</button>
           <div class="anchor">
             <button class="glass pillbtn" data-act="menu" data-menu="sort" aria-expanded="${S.menu === 'sort'}">
               ${I('<path d="M4 6h16M7 12h10M10 18h4"/>', 16)} Trier : <strong>${SORTS.find((s) => s[0] === S.sort)[1]}</strong></button>
@@ -377,7 +379,7 @@ function paintHome() {
           </div>
         </div>
       </div>
-      ${list.length ? '<div id="vgrid" class="vgrid"></div>' : `<div class="grid"><div class="empty">${S.games.length ? 'Aucun jeu ne correspond.' : S.busy ? 'Analyse de Steam, Epic et GOG…' : 'Aucun jeu détecté.'}</div></div>`}
+      ${list.length ? '<div id="vgrid" class="vgrid"></div>' : `<div class="grid"><div class="empty">${S.games.length ? 'Aucun jeu ne correspond.' : S.busy ? 'Analyse…' : 'Aucun jeu détecté.'}</div></div>`}
     </section>`;
   layoutGrid();
   sortMenu();
@@ -407,88 +409,88 @@ async function ensureShots(g) {
 function optsMenu(g) {
   const st = g.source === 'steam' && g.steamAppid;
   const inCols = S.user.collections;
-  return `<div class="menu solid" role="menu" style="left:0;bottom:72px;min-width:280px">
+  return `<div class="menu solid" role="menu" style="left:0;top:72px;min-width:240px">
     <span class="mh">${esc(g.name.toUpperCase())}</span>
-    <button class="mi" data-act="fav">${icon.star(isFav(g))}${isFav(g) ? 'Retirer des favoris' : 'Ajouter aux favoris'}</button>
+    <button class="mi" data-act="fav">${icon.star(isFav(g))}${isFav(g) ? 'Retirer des favoris' : 'Favori'}</button>
     <div class="subwrap">
-      <button class="mi" data-act="sub" data-v="cols">Ajouter à une collection<span class="r">${icon.right}</span></button>
+      <button class="mi" data-act="sub" data-v="cols">Collections<span class="r">${icon.right}</span></button>
       ${S.sub === 'cols' ? `<div class="menu solid submenu" role="menu">
-        <span class="mh">MES COLLECTIONS</span>
-        ${inCols.map((c) => `<button class="mi" role="menuitemcheckbox" aria-checked="${c.ids.includes(g.id)}" data-act="togcol" data-v="${esc(c.name)}"><span class="cdot" style="background:${c.color}"></span>${esc(c.name)}${c.ids.includes(g.id) ? icon.check : ''}</button>`).join('') || '<span class="muted" style="padding:8px 12px">Aucune collection</span>'}
-        <div class="sep"></div><button class="mi" data-act="newcol" data-v="${esc(g.id)}">+ Nouvelle collection</button>
+        <span class="mh">COLLECTIONS</span>
+        ${inCols.map((c) => `<button class="mi" role="menuitemcheckbox" aria-checked="${c.ids.includes(g.id)}" data-act="togcol" data-v="${esc(c.name)}"><span class="cdot" style="background:${c.color}"></span>${esc(c.name)}${c.ids.includes(g.id) ? icon.check : ''}</button>`).join('') || '<span class="muted" style="padding:8px 12px">—</span>'}
+        <div class="sep"></div><button class="mi" data-act="newcol" data-v="${esc(g.id)}">+ Nouvelle</button>
       </div>` : ''}
     </div>
-    <button class="mi" data-act="tab" data-v="memo">Écrire un mémo</button>
-    <button class="mi" data-act="tab" data-v="review">Noter / écrire un avis</button>
-    ${g.source === 'pc' ? '<button class="mi" data-act="editgame">Modifier le jeu (nom, images)…</button>' : ''}
+    <button class="mi" data-act="tab" data-v="memo">Mémo</button>
+    <button class="mi" data-act="tab" data-v="review">Noter</button>
+    ${g.source === 'pc' ? '<button class="mi" data-act="editgame">Modifier…</button>' : ''}
     <div class="sep"></div>
-    ${g.installed ? `<button class="mi" data-act="backup">Sauvegarder mes parties</button>` : ''}
-    ${g.installed && g.installPath ? '<button class="mi" data-act="folder">Ouvrir le dossier du jeu</button>' : ''}
+    ${g.installed ? `<button class="mi" data-act="backup">Sauvegarder</button>` : ''}
+    ${g.installed && g.installPath ? '<button class="mi" data-act="folder">Dossier</button>' : ''}
     <div class="subwrap">
       <button class="mi" data-act="sub" data-v="manage">Gérer<span class="r">${icon.right}</span></button>
       ${S.sub === 'manage' ? `<div class="menu solid submenu" role="menu">
         ${st && !g.installed ? `<button class="mi" data-act="url" data-v="steam://install/${g.steamAppid}">Installer</button>` : ''}
-        ${st && g.update ? `<button class="mi" data-act="url" data-v="steam://nav/downloads">Mettre à jour (téléchargements Steam)</button>` : ''}
-        ${st && g.installed ? `<button class="mi" data-act="url" data-v="steam://validate/${g.steamAppid}">Vérifier l'intégrité des fichiers</button>` : ''}
+        ${st && g.update ? `<button class="mi" data-act="url" data-v="steam://nav/downloads">Mettre à jour</button>` : ''}
+        ${st && g.installed ? `<button class="mi" data-act="url" data-v="steam://validate/${g.steamAppid}">Vérifier les fichiers</button>` : ''}
         ${st && g.installed ? `<button class="mi danger" data-act="url" data-v="steam://uninstall/${g.steamAppid}">Désinstaller…</button>` : ''}
-        ${g.source === 'epic' ? `<button class="mi" data-act="url" data-v="com.epicgames.launcher://store/library">Gérer dans Epic Games</button>` : ''}
+        ${g.source === 'epic' ? `<button class="mi" data-act="url" data-v="com.epicgames.launcher://store/library">Ouvrir Epic</button>` : ''}
         ${st ? `<button class="mi" data-act="url" data-v="steam://nav/games/details/${g.steamAppid}">Voir dans Steam</button>` : ''}
-        ${g.steamAppid ? `<button class="mi" data-act="url" data-v="https://store.steampowered.com/app/${g.steamAppid}">Page Steam du jeu</button>` : ''}
+        ${g.steamAppid ? `<button class="mi" data-act="url" data-v="https://store.steampowered.com/app/${g.steamAppid}">Page Steam</button>` : ''}
         <div class="sep"></div>
-        <button class="mi" data-act="hide">${isHidden(g) ? 'Ne plus masquer ce jeu' : 'Masquer ce jeu de la bibliothèque'}</button>
+        <button class="mi" data-act="hide">${isHidden(g) ? 'Afficher' : 'Masquer'}</button>
+        ${g.source === 'pc' ? '<button class="mi danger" data-act="removegame">Retirer de la bibliothèque</button>' : ''}<button hidden></button>
       </div>` : ''}
     </div>
-    <button class="mi" data-act="reach">Recharger les succès</button>
+    <button class="mi" data-act="reach">Recharger</button>
   </div>`;
 }
 
 function achPanel(g) {
   const a = S.ach[g.id];
-  if (a === undefined || a === null) return '<div class="empty">Chargement des succès…</div>';
-  const note = a.note ? `<div class="note">${esc(a.note)}${/Paramètres|clé|Connecte/.test(a.note) ? ' <button class="btn2 pri" data-act="settings">Ouvrir les paramètres</button>' : ''}</div>` : '';
-  if (!a.total) return `<div style="padding-top:20px">${note || '<div class="empty">Aucun succès pour ce jeu.</div>'}</div>`;
+  if (a === undefined || a === null) return '<div class="empty">…</div>';
+  const note = a.note ? `<div class="note">${esc(a.note)}${/Paramètres|clé|Connecte/.test(a.note) ? ' <button class="btn2 pri" data-act="settings">Paramètres</button>' : ''}</div>` : '';
+  if (!a.total) return `<div style="padding-top:20px">${note || '<div class="empty">Aucun succès.</div>'}</div>`;
   const p = Math.round((a.unlocked / a.total) * 100);
   let l = a.list;
   if (S.achF === 'got') l = l.filter((x) => x.unlocked);
   if (S.achF === 'todo') l = l.filter((x) => !x.unlocked);
   if (S.achF === 'rare') l = [...l].filter((x) => x.rarity != null).sort((x, y) => x.rarity - y.rarity).slice(0, 20);
   if (S.achF === 'all') l = [...l].sort((x, y) => (y.unlocked - x.unlocked) || (y.unlockTime - x.unlockTime));
-  const F = [['all', 'Tous'], ['got', 'Débloqués'], ['todo', 'À faire'], ['rare', 'Les plus rares']];
+  const F = [['all', 'Tous'], ['got', 'Obtenus'], ['todo', 'À faire'], ['rare', 'Rares']];
   return `<div class="ach-top">
       <div style="flex:1 1 360px;display:flex;flex-direction:column;gap:10px">
-        <div style="display:flex;align-items:baseline;gap:12px"><span class="big">${p} %</span><span class="muted" style="font-size:15px">${a.unlocked} / ${a.total} succès débloqués</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span class="big">${p}${PS}%</span><span class="muted" style="font-size:15px">${a.unlocked} / ${a.total}</span></div>
         <div class="bigbar"><span style="width:${p}%"></span></div>
-        <span class="muted" style="font-size:12px">${a.total - a.unlocked ? `${a.total - a.unlocked} restants` : 'Jeu terminé à 100 % !'}</span>
       </div>
       <div class="fseg glass" role="group" aria-label="Filtrer">${F.map(([k, x]) => `<button data-act="achf" data-v="${k}" aria-pressed="${S.achF === k}">${x}</button>`).join('')}</div>
     </div>${note}
     <div class="achs">${l.map((x) => `<div class="ach${x.unlocked ? ' on' : ''}">
         ${x.icon ? `<img src="${esc(x.icon)}" alt="" loading="lazy">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
         <span class="t"><b>${esc(x.name)}</b><span>${esc(x.desc)}</span></span>
-        <span class="r">${x.rarity != null ? (x.rarity < 10 ? `<span class="rare">${x.rarity.toFixed(1).replace('.', ',')} %</span>` : `${Math.round(x.rarity)} % des joueurs`) : ''}<span>${x.unlocked ? (x.unlockTime ? day(x.unlockTime) : 'Débloqué') : 'Verrouillé'}</span></span>
+        <span class="r">${x.rarity != null ? (x.rarity < 10 ? `<span class="rare">${dec(x.rarity)}${PS}%</span>` : `${Math.round(x.rarity)}${PS}%`) : ''}<span>${x.unlocked ? (x.unlockTime ? day(x.unlockTime) : 'Débloqué') : 'Verrouillé'}</span></span>
       </div>`).join('') || '<div class="empty">Rien dans ce filtre.</div>'}</div>`;
 }
 
 function newsPanel(g) {
   const list = g.steamAppid ? S.news[g.steamAppid] : null;
-  if (!g.steamAppid) return `<div class="empty">Pas de flux d'actus trouvé pour ${esc(g.name)}.</div>`;
-  if (!list || !list.length) return `<div class="empty">${list ? 'Aucune annonce officielle récente.' : 'Chargement des actus…'}</div>`;
+  if (!g.steamAppid) return `<div class="empty">Aucune actu.</div>`;
+  if (!list || !list.length) return `<div class="empty">${list ? 'Aucune actu.' : '…'}</div>`;
   return list.map((n, i) => `<div class="nrow">
       <button class="acc" data-act="news" data-v="${i}" aria-expanded="${S.openNews === i}">
         <span class="b ${i === 0 ? 'first' : ''}">${esc(ago(n.date))}</span>
         <span class="t"><span>${esc(n.title)}</span><span class="muted" style="font-size:13px">${esc(day(n.date))}</span></span>
         ${icon.chev}
       </button>
-      ${S.openNews === i ? `<div class="nbody"><span>${esc(n.body || 'Pas de résumé.')}</span><button class="alink" data-act="url" data-v="${esc(n.url)}">Lire en entier ↗</button></div>` : ''}
+      ${S.openNews === i ? `<div class="nbody"><span>${esc(n.body || '—')}</span><button class="alink" data-act="url" data-v="${esc(n.url)}">Lire en entier ↗</button></div>` : ''}
     </div>`).join('');
 }
 
 function shotsPanel(g) {
   const l = S.shots[g.id];
-  if (!l) return '<div class="empty">Chargement des captures…</div>';
-  if (!l.length) return `<div class="empty">${g.source === 'steam' ? 'Aucune capture Steam pour ce jeu (touche F12 en jeu).' : 'Les captures ne sont disponibles que pour les jeux Steam.'}</div>`;
+  if (!l) return '<div class="empty">…</div>';
+  if (!l.length) return `<div class="empty">${g.source === 'steam' ? 'Aucune capture (F12 en jeu).' : 'Steam uniquement.'}</div>`;
   const w = dpr() > 1.3 ? 720 : 480;
-  return `<div class="shots">${l.map((p) => `<button class="shot" data-act="openfile" data-v="${esc(p)}" title="Ouvrir en grand"><img src="${esc(loc(p, w))}" alt="" loading="lazy" decoding="async"></button>`).join('')}</div>`;
+  return `<div class="shots">${l.map((p) => `<button class="shot" data-act="openfile" data-v="${esc(p)}" ><img src="${esc(loc(p, w))}" alt="" loading="lazy" decoding="async"></button>`).join('')}</div>`;
 }
 
 function hltbCard(g) {
@@ -500,11 +502,11 @@ function hltbCard(g) {
   const pt = g.playtimeMin / 60;
   const ref = h.main || h.plus || h.full;
   const pc = ref ? Math.min(100, Math.round((pt / ref) * 100)) : 0;
-  const f = (x) => (x ? `${x < 10 ? String(x).replace('.', ',') : Math.round(x)} h` : '—');
-  return `<div class="card glass"><span class="k">POUR FINIR · HOWLONGTOBEAT</span>
+  const f = (x) => (x ? `${x < 10 ? dec(x) : Math.round(x)} h` : '—');
+  return `<div class="card glass"><span class="k">POUR FINIR</span>
     <div class="hl"><span><b>${f(h.main)}</b><small>Histoire</small></span><span><b>${f(h.plus)}</b><small>+ Extras</small></span><span><b>${f(h.full)}</b><small>100 %</small></span></div>
-    ${ref && pt ? `<span class="minibar wide"><span style="width:${pc}%"></span></span><span class="muted" style="font-size:12px">Tu en es à ${fmtH(g.playtimeMin)}${pc >= 100 ? ' : histoire largement bouclée' : ` · ${pc} % de la durée de l'histoire`}</span>` : ''}
-    <button class="alink" data-act="url" data-v="${esc(h.url)}" style="min-height:0">Voir « ${esc(h.name)} » sur HowLongToBeat ↗</button></div>`;
+    ${ref && pt ? `<span class="minibar wide"><span style="width:${pc}%"></span></span><span class="muted" style="font-size:12px">${fmtH(g.playtimeMin)} · ${pc}${PS}%</span>` : ''}
+    <button class="alink" data-act="url" data-v="${esc(h.url)}" style="min-height:0">HowLongToBeat ↗</button></div>`;
 }
 async function ensureHltb(g) {
   if (!g || S.hltb[g.id] !== undefined || isSoft(g)) return;
@@ -518,22 +520,19 @@ function reviewPanel(g) {
   return `<div class="memo-tab">
     <div class="rate big-rate" role="group" aria-label="Ma note"><span class="stars">${starsHtml(r.stars || 0)}</span>
       <button class="heart" data-act="heart" aria-pressed="${!!r.heart}" aria-label="Coup de cœur">${heartSvg(!!r.heart)}</button>
-      <span class="rv">${r.stars ? `${String(r.stars).replace('.', ',')} / 5` : 'Clique une étoile (moitié gauche = demi-étoile)'}</span></div>
-    <label for="review-ta" style="font-size:15px;font-weight:600">Mon avis sur ${esc(g.name)}</label>
-    <textarea id="review-ta" rows="6" placeholder="Ce que tu en as pensé, en quelques lignes…">${esc(r.review || '')}</textarea>
-    <div class="btns"><button class="save" data-act="save-review">Enregistrer l'avis</button><span class="muted">${r.date ? `Noté le ${day(r.date)}` : ''}</span></div>
+      ${r.stars ? `<span class="rv">${dec(r.stars)}</span>` : ''}</div>
+    <label for="review-ta" class="sr">Avis</label>
+    <textarea id="review-ta" rows="6" placeholder="Écris quelque chose…">${esc(r.review || '')}</textarea>
+    <div class="btns"><button class="save" data-act="save-review">Enregistrer</button></div>
   </div>`;
 }
 
 function memoPanel(g) {
   const memo = S.memos[g.id] || '';
   return `<div class="memo-tab">
-    <label for="memo-ta" style="font-size:15px;font-weight:600">Où j'en suis dans ${esc(g.name)}</label>
-    <textarea id="memo-ta" rows="6" placeholder="Ex. : Acte 2, juste avant le boss. Penser à équiper l'arme de feu.">${esc(memo)}</textarea>
-    <div class="qchips"><span class="muted">Ajouter :</span>
-      ${['Boss suivant', 'Quête en cours', 'Build / équipement', 'À faire avec les amis'].map((x) => `<button class="qchip" data-act="quick" data-v="${x}">+ ${x}</button>`).join('')}
-    </div>
-    <div class="btns"><button class="save" data-act="save-memo">Enregistrer le mémo</button><span class="muted" id="memo-state">${memo ? 'Enregistré' : ''}</span></div>
+    <label for="memo-ta" class="sr">Mémo</label>
+    <textarea id="memo-ta" rows="6" placeholder="Écris quelque chose…">${esc(memo)}</textarea>
+    <div class="btns"><button class="save" data-act="save-memo">Enregistrer</button><span class="muted" id="memo-state">${memo ? 'Enregistré' : ''}</span></div>
   </div>`;
 }
 
@@ -549,7 +548,7 @@ function paintGame() {
   const n = g.steamAppid && S.news[g.steamAppid]?.[0];
   const playing = (S.friends || []).filter((f) => f.game && f.appid && f.appid === g.steamAppid);
   const similar = visible().filter((x) => x.id !== g.id && g.tags[0] && x.tags.includes(g.tags[0])).sort((x, y) => y.lastPlayed - x.lastPlayed || y.playtimeMin - x.playtimeMin).slice(0, 12);
-  const tabs = [['ach', `Succès${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus & patch notes'], ['shots', 'Captures'], ['review', 'Mon avis'], ['memo', 'Mémo']];
+  const tabs = [['ach', `${T('Succès', 'Achievements')}${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus'], ['shots', 'Captures'], ['review', 'Mon avis'], ['memo', 'Mémo']];
   const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, review: reviewPanel, memo: memoPanel }[S.tab](g);
   const title = g.logo
     ? `<img class="logo" src="${esc(th(g.logo, 900))}" alt="${esc(g.name)}" onerror="this.replaceWith(Object.assign(document.createElement('h1'),{className:'title',textContent:${esc(JSON.stringify(g.name))}}))">`
@@ -558,7 +557,7 @@ function paintGame() {
     <section class="ghero">
       <div class="body">
         <div class="gmain">
-          <span class="kicker"><span class="dot"></span>${g.update ? 'MISE À JOUR DISPONIBLE' : !g.installed ? 'NON INSTALLÉ' : memo ? 'REPRENDRE LA PARTIE' : g.lastPlayed ? 'DERNIÈRE SESSION · ' + ago(g.lastPlayed).toUpperCase() : 'DANS TA BIBLIOTHÈQUE'}</span>
+          <span class="kicker"><span class="dot"></span>${g.update ? 'MISE À JOUR DISPONIBLE' : !g.installed ? 'NON INSTALLÉ' : g.lastPlayed ? ago(g.lastPlayed).toUpperCase() : ''}</span>
           ${title}
           <div class="tags">
             <span class="tag glass">${SRC[g.source]}</span>
@@ -574,7 +573,7 @@ function paintGame() {
             </div>
           </div>
           <div class="stats glass">
-            <div><span class="k">TEMPS DE JEU</span><span class="v">${g.playtimeMin ? fmtH(g.playtimeMin) : g.source === 'steam' ? '—' : 'Pas encore suivi'}</span></div>
+            <div><span class="k">TEMPS DE JEU</span><span class="v">${g.playtimeMin ? fmtH(g.playtimeMin) : '—'}</span></div>
             <button data-act="tab" data-v="ach"><span class="k">SUCCÈS ›</span><span class="v">${a ? `${a[0]} / ${a[1]}<span class="minibar"><span style="width:${p}%"></span></span>` : '—'}</span></button>
             <div><span class="k">DERNIÈRE SESSION</span><span class="v">${ago(g.lastPlayed)}</span></div>
             <div><span class="k">TAILLE</span><span class="v">${g.installed ? size(g.size) : 'Non installé'}</span></div>
@@ -582,16 +581,15 @@ function paintGame() {
           <div class="rate glass" role="group" aria-label="Ma note">
             <span class="stars">${starsHtml(rating(g.id)?.stars || 0)}</span>
             <button class="heart" data-act="heart" aria-pressed="${!!rating(g.id)?.heart}" aria-label="Coup de cœur">${heartSvg(!!rating(g.id)?.heart)}</button>
-            <span class="rv">${rating(g.id)?.stars ? `${String(rating(g.id).stars).replace('.', ',')} / 5` : 'Pas encore noté'}</span>
-            <button class="alink" data-act="tab" data-v="review" style="min-height:0">${rating(g.id)?.review ? 'Mon avis' : 'Écrire un avis'} ↓</button>
+            ${rating(g.id)?.stars ? `<span class="rv">${dec(rating(g.id).stars)}</span>` : ''}
           </div>
         </div>
         <div class="gside">
           ${hltbCard(g)}
           ${playing.length ? `<div class="card glass"><span class="k">EN JEU EN CE MOMENT</span>${playing.map((f) => `<span class="fr"><img src="${esc(f.avatar)}" alt="">${esc(f.name)}</span>`).join('')}</div>` : ''}
-          ${memo ? `<div class="card glass"><span class="k">${icon.pen}MÉMO · OÙ J'EN SUIS</span><span class="memo">${esc(memo)}</span><button class="alink" data-act="tab" data-v="memo">Modifier le mémo ↓</button></div>`
-            : `<button class="ibtn glass memo-add" data-act="tab" data-v="memo" aria-label="Écrire un mémo" title="Écrire un mémo">${icon.pen}</button>`}
-          ${n ? `<button class="card glass newscard" data-act="tab" data-v="news"><span class="k">DERNIÈRE ANNONCE · ${esc(ago(n.date).toUpperCase())}</span><span class="t">${esc(n.title)}</span><span class="alink" style="min-height:0">Lire les notes →</span></button>` : ''}
+          ${memo ? `<div class="card glass"><span class="k">${icon.pen}MÉMO</span><span class="memo">${esc(memo)}</span><button class="alink" data-act="tab" data-v="memo">Modifier</button></div>`
+            : `<button class="ibtn glass memo-add" data-act="tab" data-v="memo" aria-label="Mémo" title="Mémo">${icon.pen}</button>`}
+          ${n ? `<button class="card glass newscard" data-act="tab" data-v="news"><span class="k">${T('ACTU', 'NEWS')} · ${esc(ago(n.date).toUpperCase())}</span><span class="t">${esc(n.title)}</span><span class="alink" style="min-height:0">Lire →</span></button>` : ''}
         </div>
       </div>
     </section>
@@ -601,7 +599,7 @@ function paintGame() {
         ${body}
       </div>
     </section>
-    ${similar.length ? `<section class="similar"><div class="sec-head"><div><h2>Aussi dans ${esc(lbl(g.tags[0]))}</h2></div><button class="alink" data-act="gocol" data-v="${esc(g.tags[0])}">Voir la collection →</button></div>
+    ${similar.length ? `<section class="similar"><div class="sec-head"><div><h2>${esc(lbl(g.tags[0]))}</h2></div><button class="alink" data-act="gocol" data-v="${esc(g.tags[0])}">Voir la collection →</button></div>
       <div class="grid row">${similar.map(cover).join('')}</div></section>` : ''}`;
 }
 
@@ -609,14 +607,14 @@ function paintGame() {
 
 function ratingsBox() {
   const rs = Object.entries(S.user.ratings || {}).filter(([id, r]) => r.stars && S.games.some((g) => g.id === id));
-  if (!rs.length) return '<section class="panel glass sbox"><h3>Mes notes</h3><span class="muted">Note tes jeux depuis leur fiche (étoiles et cœur), comme sur Letterboxd.</span></section>';
+  if (!rs.length) return '<section class="panel glass sbox"><h3>Mes notes</h3><span class="muted">—</span></section>';
   const buckets = Array.from({ length: 10 }, (_, i) => rs.filter(([, r]) => Math.round(r.stars * 2) === i + 1).length);
   const mx = Math.max(...buckets, 1);
   const avg = rs.reduce((s, [, r]) => s + r.stars, 0) / rs.length;
   const hearts = Object.values(S.user.ratings).filter((r) => r.heart).length;
   return `<section class="panel glass sbox"><h3>Mes notes</h3>
     <div class="rhist">${buckets.map((n, i) => `<span title="${(i + 1) / 2} ★ : ${n}" style="height:${Math.max(3, (n / mx) * 100)}%"></span>`).join('')}</div>
-    <div class="rhl"><span class="rt">★</span><span class="muted">${rs.length} jeu${rs.length > 1 ? 'x' : ''} noté${rs.length > 1 ? 's' : ''} · moyenne ${avg.toFixed(1).replace('.', ',')} · ${hearts} coup${hearts > 1 ? 's' : ''} de cœur</span><span class="rt">★★★★★</span></div>
+    <div class="rhl"><span class="rt">★</span><span class="muted">${rs.length} · ★ ${dec(avg)} · ♥ ${hearts}</span><span class="rt">★★★★★</span></div>
   </section>`;
 }
 
@@ -649,22 +647,22 @@ function renderStats() {
   let streak = 0; for (let i = daily.length - 1; i >= 0 && daily[i][1] > 0; i--) streak++;
   const recentTop = [...all].filter((g) => g.recentMin).sort((a, b) => b.recentMin - a.recentMin).slice(0, 6);
   $('#stats').innerHTML = `
-    <section class="home-head"><div><h1>Statistiques</h1><div class="sub">Ton temps de jeu, toutes plateformes confondues</div></div>
+    <section class="home-head"><div><h1>Statistiques</h1></div>
       <div class="kpis glass">
-        <div><span class="k">TOTAL</span><span class="v">${fmtH(total)}</span><span class="muted" style="font-size:12px">${(total / 60 / 24).toFixed(0)} jours de jeu cumulés</span></div>
+        <div><span class="k">TOTAL</span><span class="v">${fmtH(total)}</span><span class="muted" style="font-size:12px">${(total / 60 / 24).toFixed(0)} ${T('j', 'd')}</span></div>
         <div><span class="k">2 DERNIÈRES SEMAINES</span><span class="v">${recent ? fmtH(recent) : '—'}</span></div>
         <div><span class="k">JOUÉS EN ${year}</span><span class="v">${thisYear.length}</span></div>
-        <div><span class="k">SÉRIE</span><span class="v">${streak}<small>jour${streak > 1 ? 's' : ''}</small></span></div>
+        <div><span class="k">SÉRIE</span><span class="v">${streak}<small>${T('j', 'd')}</small></span></div>
       </div></section>
     <div class="stat-grid">
-      <section class="panel glass sbox"><h3>Top 12 de tes jeux</h3>
+      <section class="panel glass sbox"><h3>Top 12</h3>
         ${top.map((g) => `<button class="hbar" data-act="sel" data-id="${esc(g.id)}"><img src="${esc(th(g.cover, 120))}" alt=""><span class="hn">${esc(g.name)}</span>
           <span class="ht"><span style="width:${(g.playtimeMin / max) * 100}%;background:${g.accent || '#7C9CFF'}"></span></span><b>${fmtH(g.playtimeMin)}</b></button>`).join('')}
       </section>
       <div style="display:flex;flex-direction:column;gap:20px">
         <section class="panel glass sbox"><h3>30 derniers jours</h3>
           ${last30.length > 1 ? `<div class="vbars">${last30.map(([d, m]) => `<span title="${d} · ${fmtH(m)}" style="height:${Math.max(2, (m / dmax) * 100)}%"></span>`).join('')}</div>`
-            : '<span class="muted">L\'historique jour par jour se remplit à chaque ouverture de l\'appli : reviens demain.</span>'}
+            : '<span class="muted">Dès demain.</span>'}
           ${recentTop.length ? `<h3 style="margin-top:12px">Ces 2 semaines</h3>${recentTop.map((g) => `<span class="mini"><b>${esc(g.name)}</b><span>${fmtH(g.recentMin)}</span></span>`).join('')}` : ''}
         </section>
         <section class="panel glass sbox"><h3>Par genre</h3>
@@ -673,7 +671,7 @@ function renderStats() {
         ${ratingsBox()}
         <section class="panel glass sbox"><h3>Par plateforme</h3>
           <div class="split">${bySrc.map(([k, m]) => `<span style="flex:${m};background:${{ steam: '#5B9DFF', epic: '#E6E6EA', gog: '#C97CF0' }[k]}" title="${SRC[k]}"></span>`).join('')}</div>
-          ${bySrc.map(([k, m]) => `<span class="mini"><b>${SRC[k]}</b><span>${fmtH(m)} · ${Math.round((m / total) * 100)} %</span></span>`).join('')}
+          ${bySrc.map(([k, m]) => `<span class="mini"><b>${SRC[k]}</b><span>${fmtH(m)} · ${Math.round((m / total) * 100)}${PS}%</span></span>`).join('')}
         </section>
       </div>
     </div>`;
@@ -690,24 +688,24 @@ function renderFree() {
   if (S.menu !== 'free') { $('#free-menu').innerHTML = ''; return; }
   const row = (x) => `<div class="free-item${x.owned ? ' owned' : ''}">
       ${x.img ? `<img src="${esc(th(x.img, 240))}" alt="">` : '<span style="width:110px;height:62px;border-radius:8px;background:#222;flex:none"></span>'}
-      <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="t">${esc(x.name)}</span><span class="s">${esc(untilTxt(x) || 'Offre limitée')}</span></span>
+      <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="t">${esc(x.name)}</span><span class="s">${esc(untilTxt(x))}</span></span>
       ${x.upcoming ? '' : x.owned ? '<span class="tagown" style="margin-left:auto">DÉJÀ À TOI</span>' : `<button class="claim" data-act="url" data-v="${esc(x.url)}">Récupérer</button>`}
     </div>`;
   const sec = (store, list, empty) => `<span class="mh">${store}</span>${list.length ? list.map(row).join('') : `<span class="muted" style="padding:6px 12px 10px">${empty}</span>`}`;
   const loading = S.free === null && S.steamFree === null && S.gogFree === null;
   $('#free-menu').innerHTML = `<div class="menu solid" style="right:0;top:54px;width:460px;max-height:75vh;overflow:auto;padding:12px">
     ${loading ? '<span class="muted" style="padding:12px">Chargement…</span>' : `
-    ${sec('EPIC GAMES · CETTE SEMAINE', all.filter((x) => x.store === 'Epic' && !x.upcoming), S.free === null ? 'Chargement…' : 'Rien cette semaine.')}
-    ${all.some((x) => x.store === 'Epic' && x.upcoming) ? sec('EPIC GAMES · BIENTÔT', all.filter((x) => x.store === 'Epic' && x.upcoming), '') : ''}
-    <div class="sep"></div>${sec('STEAM · 100 % DE RÉDUCTION', all.filter((x) => x.store === 'Steam'), 'Aucun jeu offert en ce moment.')}
-    <div class="sep"></div>${sec('GOG · GIVEAWAYS', all.filter((x) => x.store === 'GOG'), 'Aucun jeu offert en ce moment.')}`}
+    ${sec('EPIC', all.filter((x) => x.store === 'Epic' && !x.upcoming), S.free === null ? 'Chargement…' : '—')}
+    ${all.some((x) => x.store === 'Epic' && x.upcoming) ? sec('EPIC · BIENTÔT', all.filter((x) => x.store === 'Epic' && x.upcoming), '') : ''}
+    <div class="sep"></div>${sec('STEAM', all.filter((x) => x.store === 'Steam'), '—')}
+    <div class="sep"></div>${sec('GOG', all.filter((x) => x.store === 'GOG'), '—')}`}
   </div>`;
 }
 
 function renderFriends() {
   if (S.menu !== 'friends') { $('#friends-menu').innerHTML = ''; return; }
   const f = S.friends;
-  const st = (x) => (x.game ? `<span style="color:#6EE7A8">En jeu · ${esc(x.game)}</span>` : x.state ? '<span style="color:#8DB8FF">En ligne</span>' : `Hors ligne · ${esc(ago(x.lastOff))}`);
+  const st = (x) => (x.game ? `<span style="color:#6EE7A8">${esc(x.game)}</span>` : x.state ? '<span style="color:#8DB8FF">En ligne</span>' : esc(ago(x.lastOff)));
   $('#friends-menu').innerHTML = `<div class="menu solid" style="right:0;top:54px;width:360px;max-height:70vh;overflow:auto;padding:10px">
     <span class="mh">AMIS STEAM</span>
     ${f === null ? '<span class="muted" style="padding:12px">Chargement…</span>' : !f.length ? `<span class="muted" style="padding:12px">${S.acc.steamKey ? 'Aucun ami visible (liste privée ?).' : 'Ajoute ta clé Steam dans les Paramètres.'}</span>`
@@ -726,11 +724,11 @@ function renderModal() {
     m.innerHTML = `<div class="overlay" data-act="close-modal"><div class="dialog solid" role="dialog" aria-modal="true" aria-label="Modifier le jeu">
       <h2 style="margin:0">Modifier le jeu</h2>
       <span class="muted" style="word-break:break-all">${esc(e.exe || '')}</span>
-      <label for="eg-name">Nom affiché</label><input id="eg-name" type="text" value="${esc(e.name)}">
-      <label for="eg-q">Associer à un jeu Steam (jaquette, bannière, catégories, actus, durée)</label>
+      <label for="eg-name">Nom</label><input id="eg-name" type="text" value="${esc(e.name)}">
+      <label for="eg-q">Jeu Steam associé</label>
       <div class="row2"><input id="eg-q" type="search" value="${esc(e.q ?? e.name)}" style="flex:1"><button class="btn2" data-act="eg-search">Chercher</button></div>
       <div class="hits">${(e.hits || []).map((h) => `<button class="hit${e.appid === h.id ? ' on' : ''}" data-act="eg-pick" data-v="${h.id}"><img src="${esc(h.img)}" alt="">${esc(h.name)}</button>`).join('') || (e.hits ? '<span class="muted">Aucun résultat.</span>' : '')}</div>
-      <span class="muted">${e.appid ? `Associé à l'appid Steam ${e.appid}` : 'Pas associé : seul le nom sera affiché.'} <button class="alink" data-act="eg-none" style="min-height:0">Aucune association</button></span>
+      <span class="muted">${e.appid ? `Steam #${e.appid}` : '—'} <button class="alink" data-act="eg-none" style="min-height:0">Aucun</button></span>
       <div class="row2" style="justify-content:space-between"><button class="btn2 danger" data-act="eg-remove">Retirer de la bibliothèque</button>
         <span class="row2"><button class="btn2" data-act="close-modal">Annuler</button><button class="btn2 pri" data-act="eg-save">Enregistrer</button></span></div>
     </div></div>`;
@@ -740,7 +738,7 @@ function renderModal() {
     const gid = S.modal.split('|')[1] || '';
     m.innerHTML = `<div class="overlay" data-act="close-modal"><div class="dialog solid" role="dialog" aria-modal="true" aria-label="Nouvelle collection" style="width:min(440px,100%)">
       <h2 style="margin:0">Nouvelle collection</h2>
-      <label for="col-name">Nom</label><input id="col-name" type="text" maxlength="40" placeholder="Ex. : À finir en 2026" autocomplete="off">
+      <label for="col-name">Nom</label><input id="col-name" type="text" maxlength="40" placeholder="Nom" autocomplete="off">
       <div class="row2">${PALETTE.map((c, i) => `<button class="swatch" data-act="colcolor" data-v="${c}" aria-label="Couleur ${i + 1}" aria-pressed="${i === 0}" style="background:${c}"></button>`).join('')}</div>
       <div class="row2" style="justify-content:flex-end"><button class="btn2" data-act="close-modal">Annuler</button><button class="btn2 pri" data-act="createcol" data-v="${esc(gid)}">Créer</button></div>
       <span class="err" id="col-err"></span></div></div>`;
@@ -748,93 +746,65 @@ function renderModal() {
     return;
   }
   const a = S.acc, u = S.user;
-  const tog = (k, label, desc) => `<label class="tgl"><input type="checkbox" data-pref="${k}" ${u[k] ? 'checked' : ''}><span class="sw"></span><span><b>${label}</b><span class="muted">${desc}</span></span></label>`;
+  const tog = (k, label) => `<label class="tgl"><input type="checkbox" data-pref="${k}" ${u[k] ? 'checked' : ''}><span class="sw"></span><span><b>${label}</b></span></label>`;
+  const ltog = (k, label) => `<label class="tgl"><input type="checkbox" data-lp="${k}" ${P[k] ? 'checked' : ''}><span class="sw"></span><span><b>${label}</b></span></label>`;
+  const seg = (act, cur, opts, label) => `<div class="fseg glass" role="radiogroup" aria-label="${label}" style="align-self:flex-start">${opts.map(([k, x]) => `<button role="radio" data-act="${act}" data-v="${k}" aria-pressed="${cur === k}" aria-checked="${cur === k}">${x}</button>`).join('')}</div>`;
   m.innerHTML = `<div class="overlay" data-act="close-modal">
     <div class="dialog solid" role="dialog" aria-modal="true" aria-label="Paramètres">
       <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Paramètres</h2>
         <button class="ibtn glass" data-act="close-modal" aria-label="Fermer">✕</button></div>
 
+      <div class="box"><h3>Général</h3>
+        <div class="srow"><span>Langue</span>${seg('lang', LANG, [['en', 'English'], ['fr', 'Français']], 'Langue')}</div>
+        ${tog('closeToTray', 'Garder en fond à la fermeture')}
+        ${tog('autostart', 'Lancer avec Windows')}
+        ${tog('notify', 'Notifications')}
+        ${ltog('big', 'Mode manette')}
+        <div class="srow"><span>v${esc(S.version || '?')}</span><span class="row2"><span class="muted" id="up-state">${S.update ? `v${esc(S.update.version)}` : ''}</span>
+          ${S.update ? '<button class="btn2 pri" data-act="up-install">Mettre à jour</button>' : '<button class="btn2" data-act="up-check">Vérifier</button>'}</span></div>
+      </div>
+
       <div class="box"><h3>Apparence</h3>
-        <span class="muted">Couleur d'accent (boutons, barres, halos)</span>
-        <div class="fseg glass" role="radiogroup" aria-label="Couleur d'accent" style="align-self:flex-start">
-          <button role="radio" data-act="acc-mode" data-v="dyn" aria-pressed="${P.accentMode === 'dyn'}" aria-checked="${P.accentMode === 'dyn'}">Selon le jeu</button>
-          <button role="radio" data-act="acc-mode" data-v="fixed" aria-pressed="${P.accentMode === 'fixed'}" aria-checked="${P.accentMode === 'fixed'}">Couleur fixe</button>
-        </div>
-        ${P.accentMode === 'fixed' ? `<div class="row2">${PALETTE.map((c) => `<button class="swatch" data-act="acc-col" data-v="${c}" aria-label="Couleur ${c}" aria-pressed="${P.accentFixed === c}" style="background:${c}"></button>`).join('')}
-          <label class="swatch custom" title="Autre couleur" style="background:${P.accentFixed}"><input id="acc-pick" type="color" value="${P.accentFixed}" class="sr"></label></div>` : ''}
-        <span class="muted">Taille des jaquettes</span>
-        <div class="fseg glass" role="radiogroup" aria-label="Taille des jaquettes" style="align-self:flex-start">
-          ${[['S', 'Petites'], ['M', 'Normales'], ['L', 'Grandes']].map(([k, x]) => `<button role="radio" data-act="size" data-v="${k}" aria-pressed="${P.size === k}" aria-checked="${P.size === k}">${x}</button>`).join('')}
-        </div>
-        <label class="tgl"><input type="checkbox" data-lp="glass" ${P.glass ? 'checked' : ''}><span class="sw"></span><span><b>Effets de verre</b><span class="muted">Flou derrière les panneaux. À couper sur un PC modeste.</span></span></label>
-        <label class="tgl"><input type="checkbox" data-lp="motion" ${P.motion ? 'checked' : ''}><span class="sw"></span><span><b>Animations</b><span class="muted">Transitions de couleur, survols, éventails.</span></span></label>
+        <div class="srow"><span>Accent</span>${seg('acc-mode', P.accentMode, [['dyn', 'Auto'], ['fixed', 'Fixe']], 'Accent')}</div>
+        ${P.accentMode === 'fixed' ? `<div class="row2">${PALETTE.map((c) => `<button class="swatch" data-act="acc-col" data-v="${c}" aria-label="${c}" aria-pressed="${P.accentFixed === c}" style="background:${c}"></button>`).join('')}
+          <label class="swatch custom" style="background:${P.accentFixed}"><input id="acc-pick" type="color" value="${P.accentFixed}" class="sr"></label></div>` : ''}
+        <div class="srow"><span>Jaquettes</span>${seg('size', P.size, [['S', 'S'], ['M', 'M'], ['L', 'L']], 'Jaquettes')}</div>
+        <div class="srow"><span>Fond</span>${seg('wp-mode', P.wp, [['auto', 'Auto'], ['file', 'Image'], ['game', 'Jeu']], 'Fond')}</div>
+        ${P.wp === 'file' ? `<div class="row2"><label class="btn2" for="wp-file" style="display:flex;align-items:center;cursor:pointer">Choisir…</label>
+          <input id="wp-file" type="file" accept="image/*" class="sr">${wpPath ? '<button class="btn2" data-act="wp-clear">Retirer</button>' : ''}</div>` : ''}
+        ${P.wp === 'game' ? `<select id="wp-game" class="sel" aria-label="Jeu">
+          <option value="">—</option>
+          ${S.games.filter((x) => x.hero).sort((x, y) => x.name.localeCompare(y.name, LOCALE)).map((x) => `<option value="${esc(x.id)}" ${x.id === P.wpGame ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+        </select>` : ''}
+        ${P.wp !== 'auto' ? `<label for="wp-blur">Flou <span id="wp-blur-v">${P.wpBlur}</span></label><input id="wp-blur" class="range" type="range" min="0" max="40" value="${P.wpBlur}">
+          <label for="wp-dim">Sombre <span id="wp-dim-v">${P.wpDim}</span></label><input id="wp-dim" class="range" type="range" min="0" max="85" value="${P.wpDim}">` : ''}
+        ${ltog('glass', 'Flou des panneaux')}
+        ${ltog('motion', 'Animations')}
+        <span class="err" id="wp-err"></span>
       </div>
 
-      <div class="box"><h3>Mises à jour d'Ultimate</h3>
-        <span class="muted">Version installée : ${esc(S.version || '?')}. L'appli vérifie au démarrage et propose d'installer en un clic (paquets signés).</span>
-        <label for="up-url">Source des mises à jour (latest.json)</label>
-        <input id="up-url" type="text" value="${esc(S.user.updateUrl || '')}" placeholder="Par défaut : github.com/Desarrh/ultimate (laisser vide)">
-        <div class="row2"><button class="btn2" data-act="up-check">Rechercher une mise à jour</button><span class="muted" id="up-state">${S.update ? `Version ${esc(S.update.version)} disponible` : ''}</span>
-          ${S.update ? '<button class="btn2 pri" data-act="up-install">Installer et redémarrer</button>' : ''}</div>
-      </div>
-
-      <div class="box"><h3>Application</h3>
-        ${tog('closeToTray', 'Réduire dans la zone de notification', 'Fermer la fenêtre garde le launcher prêt à se rouvrir instantanément.')}
-        ${tog('autostart', 'Lancer avec Windows', 'Démarre discrètement dans la zone de notification.')}
-        ${tog('notify', 'Notifications', 'Jeux gratuits de la semaine et promos de ta liste de souhaits (vérifié toutes les 6 h).')}
-        <label class="tgl"><input type="checkbox" data-lp="big" ${P.big ? 'checked' : ''}><span class="sw"></span><span><b>Mode grand écran / manette</b><span class="muted">Plein écran, éléments plus grands, navigation à la manette (A valider, B retour, Y recherche).</span></span></label>
-      </div>
-
-      <div class="box"><h3>Sauvegardes des parties</h3>
-        <span class="muted">Copie les fichiers de sauvegarde de tes jeux (emplacements fournis par la base communautaire Ludusavi).</span>
-        ${tog('autoBackup', 'Sauvegarder après chaque session', 'Après un jeu lancé depuis le launcher.')}
-        <label for="bk-dir">Dossier</label>
-        <div class="row2"><input id="bk-dir" type="text" value="${esc(u.backupDir || '')}" placeholder="Documents\\Launcher - Sauvegardes" style="flex:1"><button class="btn2" data-act="bkopen">Ouvrir</button></div>
+      <div class="box"><h3>Sauvegardes</h3>
+        ${tog('autoBackup', 'Après chaque session')}
+        <div class="row2"><input id="bk-dir" type="text" value="${esc(u.backupDir || '')}" placeholder="Documents\\Ultimate - Sauvegardes" aria-label="Dossier" style="flex:1"><button class="btn2" data-act="bkopen">Ouvrir</button></div>
       </div>
 
       <div class="box">
-        <h3>Steam ${a.steamKey ? '<span class="ok">· relié</span>' : ''}</h3>
-        <span class="muted">Temps de jeu exact, succès, amis, liste de souhaits. Compte : ${a.steamId ? esc(a.steamId) : 'aucun'}.</span>
-        ${a.steamKey ? `<div class="row2"><span class="ok">Clé enregistrée dans le coffre Windows.</span><button class="btn2" data-act="steam-del">Retirer la clé</button></div>` : `
-          <ol>
-            <li>Ouvre <button class="alink" data-act="url" data-v="https://steamcommunity.com/dev/apikey" style="min-height:0">steamcommunity.com/dev/apikey</button>, domaine : <b>localhost</b>.</li>
-            <li>Dans Steam : Profil › Confidentialité › « Détails de jeu » en <b>Public</b>.</li>
-          </ol>
-          <label for="steam-key">Clé d'API Steam</label>
-          <div class="row2"><input id="steam-key" type="password" autocomplete="off" spellcheck="false" placeholder="32 caractères" style="flex:1">
-            <button class="btn2 pri" data-act="steam-save">Enregistrer</button></div>`}
+        <h3>Steam ${a.steamKey ? '<span class="ok">✓</span>' : ''}</h3>
+        ${a.steamKey ? '<div class="row2"><button class="btn2" data-act="steam-del">Retirer la clé</button></div>' : `
+          <div class="row2"><input id="steam-key" type="password" autocomplete="off" spellcheck="false" placeholder="Clé API" aria-label="Clé API" style="flex:1">
+            <button class="btn2 pri" data-act="steam-save">OK</button></div>
+          <span class="muted" style="font-size:12px"><button class="alink" data-act="url" data-v="https://steamcommunity.com/dev/apikey" style="min-height:0">Obtenir une clé ↗</button> · domaine : localhost · profil public</span>`}
         <span class="err" id="steam-err"></span>
       </div>
 
       <div class="box">
-        <h3>Epic Games ${a.epic ? `<span class="ok">· ${esc(a.epic)}</span>` : ''}</h3>
-        ${a.epic ? `<div class="row2"><span class="ok">Connecté.</span><button class="btn2" data-act="epic-off">Se déconnecter</button></div>` : `
-          <ol>
-            <li><button class="btn2" data-act="epic-login">Ouvrir la connexion Epic</button></li>
-            <li>Copie la valeur <b>authorizationCode</b> affichée, colle-la ici.</li>
-          </ol>
-          <div class="row2"><input id="epic-code" type="password" autocomplete="off" spellcheck="false" placeholder="authorizationCode" style="flex:1">
-            <button class="btn2 pri" data-act="epic-save">Valider</button></div>`}
+        <h3>Epic ${a.epic ? `<span class="ok">✓ ${esc(a.epic)}</span>` : ''}</h3>
+        ${a.epic ? '<div class="row2"><button class="btn2" data-act="epic-off">Déconnecter</button></div>' : `
+          <div class="row2"><button class="btn2" data-act="epic-login">Connexion ↗</button>
+            <input id="epic-code" type="password" autocomplete="off" spellcheck="false" placeholder="authorizationCode" aria-label="Code" style="flex:1">
+            <button class="btn2 pri" data-act="epic-save">OK</button></div>`}
         <span class="err" id="epic-err"></span>
       </div>
-
-      <div class="box">
-        <h3>Fond d'écran de la bibliothèque</h3>
-        <div class="fseg glass" role="radiogroup" aria-label="Type de fond" style="align-self:flex-start">
-          ${[['auto', 'Automatique'], ['file', 'Image de mon PC'], ['game', "Bannière d'un jeu"]].map(([k, x]) => `<button role="radio" data-act="wp-mode" data-v="${k}" aria-pressed="${P.wp === k}" aria-checked="${P.wp === k}">${x}</button>`).join('')}
-        </div>
-        ${P.wp === 'file' ? `<div class="row2"><label class="btn2" for="wp-file" style="display:flex;align-items:center;cursor:pointer">Choisir une image…</label>
-          <input id="wp-file" type="file" accept="image/*" class="sr"><span class="muted">${wpPath ? 'Image enregistrée' : 'Aucune image'}</span>
-          ${wpPath ? '<button class="btn2" data-act="wp-clear">Retirer</button>' : ''}</div>` : ''}
-        ${P.wp === 'game' ? `<label for="wp-game">Jeu</label><select id="wp-game" class="sel">
-          <option value="">Choisis un jeu…</option>
-          ${S.games.filter((x) => x.hero).sort((x, y) => x.name.localeCompare(y.name, 'fr')).map((x) => `<option value="${esc(x.id)}" ${x.id === P.wpGame ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
-        </select>` : ''}
-        ${P.wp !== 'auto' ? `<label for="wp-blur">Flou : <span id="wp-blur-v">${P.wpBlur}</span> px</label><input id="wp-blur" class="range" type="range" min="0" max="40" value="${P.wpBlur}">
-          <label for="wp-dim">Assombrir : <span id="wp-dim-v">${P.wpDim}</span> %</label><input id="wp-dim" class="range" type="range" min="0" max="85" value="${P.wpDim}">` : '<span class="muted">Suit ton dernier jeu et la couleur de la collection.</span>'}
-        <span class="err" id="wp-err"></span>
-      </div>
-      <span class="muted" style="font-size:12px">Ultimate · clés et jetons : Gestionnaire d'identification de Windows. Images : redimensionnées et mises en cache sur le disque.</span>
     </div></div>`;
 }
 
@@ -871,7 +841,7 @@ function goHome() {
 
 async function refresh(force = false) {
   S.busy = true; $('#refresh-btn').classList.add('spin'); if (S.view === 'home') renderHome();
-  try { await invoke('refresh', { force }); } catch (e) { toast('Erreur : ' + e); }
+  try { await invoke('refresh', { force }); } catch (e) { toast(String(e)); }
   S.busy = false; $('#refresh-btn').classList.remove('spin'); if (S.view === 'home') renderHome();
   invoke('sync_achievements').catch(() => {});
   invoke('get_history').then((h) => { S.history = h || {}; }).catch(() => {});
@@ -882,14 +852,14 @@ async function saveMemo() {
   const text = ta.value.trim();
   await invoke('set_memo', { id: g.id, text });
   if (text) S.memos[g.id] = text; else delete S.memos[g.id];
-  toast(text ? `Mémo enregistré pour ${g.name}` : 'Mémo effacé');
+  toast(text ? 'Enregistré' : 'Effacé');
   renderGame();
 }
 
 async function launch(g, el) {
   if (!g) return;
   el?.classList.remove('launching'); void el?.offsetWidth; el?.classList.add('launching');
-  try { await invoke('launch', { id: g.id }); toast(g.installed ? `Lancement de ${g.name}…` : `Ouverture de l'installation de ${g.name}…`); } catch (err) { toast(String(err)); }
+  try { await invoke('launch', { id: g.id }); toast(g.installed ? `${g.name}…` : 'Installation…'); } catch (err) { toast(String(err)); }
 }
 
 async function loadAccounts() { try { S.acc = await invoke('accounts_status'); } catch { /* ignore */ } }
@@ -940,7 +910,7 @@ document.addEventListener('click', async (e) => {
     case 'hide': {
       const h = S.user.hidden; const i = h.indexOf(g.id);
       if (i >= 0) h.splice(i, 1); else h.push(g.id);
-      saveUser(); S.menu = null; toast(i >= 0 ? `${g.name} est de nouveau visible` : `${g.name} masqué (collection « Masqués »)`); renderGame(); return;
+      saveUser(); S.menu = null; toast(i >= 0 ? 'Affiché' : 'Masqué'); renderGame(); return;
     }
     case 'togcol': {
       const c = S.user.collections.find((x) => x.name === v); if (!c) return;
@@ -954,10 +924,10 @@ document.addEventListener('click', async (e) => {
       if (!name) { $('#col-err').textContent = 'Donne un nom à la collection.'; return; }
       if (S.user.collections.some((x) => x.name.toLowerCase() === name.toLowerCase())) { $('#col-err').textContent = 'Cette collection existe déjà.'; return; }
       S.user.collections.push({ name, color: S.newColor || PALETTE[0], ids: v ? [v] : [] });
-      saveUser(); S.modal = null; toast(`Collection « ${name} » créée`); render(); return;
+      saveUser(); S.modal = null; toast('Créée'); render(); return;
     }
     case 'delcol': S.user.collections = S.user.collections.filter((x) => 'c:' + x.name !== v); S.col = 'Tout'; saveUser(); renderHome(); return;
-    case 'backup': S.menu = null; renderGame(); toast('Sauvegarde en cours…');
+    case 'backup': S.menu = null; renderGame(); toast('Sauvegarde…');
       invoke('backup_save', { id: g.id }).then((m) => toast(m)).catch((err) => toast(String(err))); return;
     case 'bkopen': invoke('open_backups').catch((err) => toast(String(err))); return;
     case 'src': S.src = v; S.col = 'Tout'; if (S.view !== 'home') goHome(); else render(); return;
@@ -966,7 +936,7 @@ document.addEventListener('click', async (e) => {
     case 'sort': S.sort = v; S.menu = null; renderHome(); return;
     case 'soft': S.showSoft = !S.showSoft; S.menu = null; renderHome(); return;
     case 'refresh': refresh(); return;
-    case 'rescan': S.menu = null; refresh(true); toast('Mise à jour des infos…'); return;
+    case 'rescan': S.menu = null; refresh(true); toast('…'); return;
     case 'settings': S.modal = 'settings'; S.menu = null; await loadAccounts(); renderModal(); return;
     case 'close-modal': if (e.target === el || el.tagName === 'BUTTON') { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); } return;
     case 'steam-save': {
@@ -979,7 +949,7 @@ document.addEventListener('click', async (e) => {
     case 'epic-login': invoke('epic_login').catch((err) => toast(String(err))); return;
     case 'epic-save': {
       const code = $('#epic-code').value; $('#epic-err').textContent = 'Connexion…';
-      try { const name = await invoke('epic_connect', { code }); await loadAccounts(); renderModal(); toast(`Epic relié : ${name || 'compte connecté'}`); S.ach = {}; refresh(); }
+      try { const name = await invoke('epic_connect', { code }); await loadAccounts(); renderModal(); toast(`Epic ✓ ${name || ''}`); S.ach = {}; refresh(); }
       catch (err) { $('#epic-err').textContent = String(err); }
       return;
     }
@@ -995,22 +965,23 @@ document.addEventListener('click', async (e) => {
     case 'heart': {
       const cur0 = rating(g.id) || {};
       S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, heart: !cur0.heart, date: cur0.date || Math.floor(Date.now() / 1000) } };
-      saveUser(); renderGame(); if (!cur0.heart) toast('Coup de cœur ♥'); return;
+      saveUser(); renderGame(); if (!cur0.heart)  return;
     }
     case 'save-review': {
       const cur0 = rating(g.id) || {};
       S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, review: $('#review-ta').value.trim(), date: Math.floor(Date.now() / 1000) } };
-      saveUser(); toast('Avis enregistré'); renderGame(); return;
+      saveUser(); toast('Enregistré'); renderGame(); return;
     }
     case 'addgame': {
       const id = await invoke('add_custom').catch((err) => { toast(String(err)); return null; });
       if (!id) return;
-      toast('Jeu ajouté, récupération des images…');
+      toast('Ajouté');
       await refresh();
       openEdit(id);
       return;
     }
     case 'editgame': S.menu = null; openEdit(g.id); return;
+    case 'removegame': await invoke('remove_custom', { id: g.id }); S.games = S.games.filter((x) => x.id !== g.id); toast('Jeu retiré'); goHome(); return;
     case 'eg-search': {
       const q = $('#eg-q').value.trim(); S.edit.name = $('#eg-name').value; S.edit.q = q;
       S.edit.hits = await invoke('steam_search', { q }).catch(() => []); renderModal(); return;
@@ -1020,18 +991,19 @@ document.addEventListener('click', async (e) => {
     case 'eg-save': {
       const name = $('#eg-name').value.trim() || S.edit.name;
       await invoke('update_custom', { id: S.edit.id, name, steamAppid: S.edit.appid || null });
-      S.modal = null; renderModal(); toast('Jeu mis à jour'); await refresh(); if (S.view === 'game') renderGame(); return;
+      S.modal = null; renderModal(); toast('Enregistré'); await refresh(); if (S.view === 'game') renderGame(); return;
     }
     case 'eg-remove':
       await invoke('remove_custom', { id: S.edit.id }); S.modal = null; renderModal();
       S.games = S.games.filter((x) => x.id !== S.edit.id); toast('Jeu retiré'); goHome(); return;
+    case 'lang': S.user.lang = v; await invoke('set_user', { u: S.user }).catch(() => {}); setLang(v); return;
     case 'acc-mode': P.accentMode = v; savePrefs(); renderModal(); render(); return;
     case 'acc-col': P.accentFixed = v; savePrefs(); renderModal(); render(); return;
     case 'size': P.size = v; savePrefs(); renderModal(); render(); return;
     case 'up-check': {
       commitSettingsText();
       const st = $('#up-state'); st.textContent = 'Recherche…';
-      try { S.update = await invoke('check_update'); st.textContent = S.update ? `Version ${S.update.version} disponible` : 'Ultimate est à jour.'; renderModal(); renderUpdPill(); }
+      try { S.update = await invoke('check_update'); st.textContent = S.update ? `v${S.update.version}` : T('À jour', 'Up to date'); renderModal(); renderUpdPill(); }
       catch (err) { st.textContent = String(err); }
       return;
     }
@@ -1081,7 +1053,7 @@ function back() {
 }
 document.addEventListener('input', (e) => {
   const id = e.target.id;
-  if (id === 'memo-ta') $('#memo-state').textContent = 'Non enregistré · Ctrl+Entrée pour enregistrer';
+  if (id === 'memo-ta') $('#memo-state').textContent = 'Non enregistré';
   if (id === 'wp-blur' || id === 'wp-dim') {
     P[id === 'wp-blur' ? 'wpBlur' : 'wpDim'] = +e.target.value; savePrefs();
     $(`#${id}-v`).textContent = e.target.value;
@@ -1098,7 +1070,7 @@ document.addEventListener('change', async (e) => {
   if (t.id === 'wp-file' && t.files[0]) {
     const f = t.files[0];
     const url = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(f); });
-    try { await invoke('set_wallpaper', { dataUrl: url }); wpPath = await invoke('get_wallpaper'); renderModal(); if (S.view === 'home') renderHome(); toast("Fond d'écran enregistré"); }
+    try { await invoke('set_wallpaper', { dataUrl: url }); wpPath = await invoke('get_wallpaper'); renderModal(); if (S.view === 'home') renderHome(); toast('Enregistré'); }
     catch (err) { $('#wp-err').textContent = String(err); }
   }
 });
@@ -1146,7 +1118,7 @@ function pollPad() {
   }
   requestAnimationFrame(pollPad);
 }
-addEventListener('gamepadconnected', () => { toast('Manette détectée : A valider, B retour, Y recherche, Start grand écran'); });
+addEventListener('gamepadconnected', () => { toast('Manette détectée'); });
 requestAnimationFrame(pollPad);
 
 // ---------- boot ----------
@@ -1162,6 +1134,8 @@ function onLibrary(list) {
 (async () => {
   const [lib, memos, achsum, user] = await Promise.all([invoke('get_cached'), invoke('get_memos'), invoke('get_achsum'), invoke('get_user')]);
   S.memos = memos; S.achsum = achsum; S.games = lib; S.user = { ...S.user, ...user };
+  if (S.user.lang !== LANG) { S.user.lang = LANG; saveUser(); }
+  startI18n();
   try { wpPath = await invoke('get_wallpaper'); } catch { /* none */ }
   render();
   if (P.big) getCurrentWindow().setFullscreen(true).catch(() => {});
@@ -1173,6 +1147,6 @@ function onLibrary(list) {
   invoke('free_games').then((f) => { S.free = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => {});
   invoke('steam_free_games').then((f) => { S.steamFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.steamFree = []; });
   invoke('app_version').then((v) => { S.version = v; }).catch(() => {});
-  invoke('check_update').then((u) => { S.update = u; renderUpdPill(); if (u) toast(`Ultimate ${u.version} est disponible`); }).catch(() => {});
+  invoke('check_update').then((u) => { S.update = u; renderUpdPill(); if (u) toast(`Ultimate ${u.version} ✓`); }).catch(() => {});
   invoke('gog_free_games').then((f) => { S.gogFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.gogFree = []; });
 })();

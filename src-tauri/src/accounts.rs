@@ -6,6 +6,10 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Mutex, time::{Duration, Instant}};
 
 const SERVICE: &str = "dev.local.launcher";
+
+/// UI language is French (else English): picks the language of achievement names.
+pub static FR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn fr() -> bool { FR.load(std::sync::atomic::Ordering::Relaxed) }
 // Public client of the Epic Games Launcher (same flow as open-source launchers like Legendary/Heroic).
 const EPIC_ID: &str = "34a02cf8f4414e29b15921876da36f9a";
 const EPIC_SECRET: &str = "daafbccc737745039dffe53d94fc76cf";
@@ -68,10 +72,10 @@ pub async fn steam_owned(c: &Client, key: &str, sid: u64) -> Option<HashMap<u32,
 
 pub async fn steam_achievements(c: &Client, key: &str, sid: u64, appid: u32) -> AchList {
     let empty = |n: &str| AchList { unlocked: 0, total: 0, list: vec![], note: Some(n.into()) };
-    let schema = json_get(c, &format!("https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={key}&appid={appid}&l=french")).await;
+    let schema = json_get(c, &format!("https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={key}&appid={appid}&l={}", if fr() { "french" } else { "english" })).await;
     let defs = schema.as_ref().and_then(|s| s.pointer("/game/availableGameStats/achievements")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     if defs.is_empty() {
-        return empty("Ce jeu n'a pas de succès Steam.");
+        return empty("Aucun succès.");
     }
     let player = json_get(c, &format!("https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/?key={key}&steamid={sid}&appid={appid}")).await;
     let mine: HashMap<String, (bool, u64)> = player.as_ref()
@@ -102,7 +106,7 @@ pub async fn steam_achievements(c: &Client, key: &str, sid: u64, appid: u32) -> 
         unlocked,
         total: list.len(),
         list,
-        note: private.then(|| "Steam ne renvoie pas tes succès : passe les « détails de jeu » de ton profil en public.".into()),
+        note: private.then(|| "Profil Steam privé (Détails de jeu → Public).".into()),
     }
 }
 
@@ -181,10 +185,10 @@ async fn gql(c: &Client, q: &str, vars: Value, tok: Option<&str>) -> Option<Valu
 pub async fn epic_achievements(c: &Client, ns: &str) -> AchList {
     const DEFS: &str = "query($sandboxId:String!,$locale:String!){Achievement{productAchievementsRecordBySandbox(sandboxId:$sandboxId,locale:$locale){totalAchievements achievements{achievement{name hidden unlockedDisplayName lockedDisplayName unlockedDescription lockedDescription unlockedIconLink lockedIconLink rarity{percent}}}}}}";
     const MINE: &str = "query($epicAccountId:String!,$sandboxId:String!){PlayerAchievement{playerAchievementGameRecordsBySandbox(epicAccountId:$epicAccountId,sandboxId:$sandboxId){records{totalUnlocked playerAchievements{playerAchievement{achievementName unlocked unlockDate}}}}}}";
-    let defs = gql(c, DEFS, json!({ "sandboxId": ns, "locale": "fr" }), None).await;
+    let defs = gql(c, DEFS, json!({ "sandboxId": ns, "locale": if fr() { "fr" } else { "en" } }), None).await;
     let items = defs.as_ref().and_then(|d| d.pointer("/data/Achievement/productAchievementsRecordBySandbox/achievements")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     if items.is_empty() {
-        return AchList { unlocked: 0, total: 0, list: vec![], note: Some("Ce jeu n'a pas de succès Epic.".into()) };
+        return AchList { unlocked: 0, total: 0, list: vec![], note: Some("Aucun succès.".into()) };
     }
     let mut note = None;
     let mut mine: HashMap<String, u64> = HashMap::new();
@@ -205,7 +209,7 @@ pub async fn epic_achievements(c: &Client, ns: &str) -> AchList {
                 }
             }
         }
-        None => note = Some("Connecte ton compte Epic (Paramètres) pour voir les succès débloqués.".into()),
+        None => note = Some("Connecte Epic (Paramètres).".into()),
     }
     let list: Vec<Ach> = items.iter().filter_map(|it| {
         let a = it.get("achievement")?;

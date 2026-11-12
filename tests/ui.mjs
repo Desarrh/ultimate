@@ -109,7 +109,7 @@ await check('Collections Apps et Démos & tests', async () => {
   const apps = await page.$$eval('#vgrid .cov .nm', (l) => l.map((x) => x.textContent));
   assert(apps.some((n) => /godot|aseprite|blender/i.test(n)), 'Godot/Aseprite absents des Apps');
   let demos = '—';
-  if (has.includes('Démos & tests')) { await click('.col[data-v="Démo"]'); demos = await text('#lib .sec-head .muted'); }
+  if (has.some((x) => /Démos|Demos/.test(x))) { await click('.col[data-v="Démo"]'); demos = await text('#lib .sec-head .muted'); }
   await click('.col[data-v="Tout"]');
   return `Apps : ${apps.length} (${apps.slice(0, 4).join(', ')}) · Démos & tests : ${demos}`;
 });
@@ -241,7 +241,7 @@ await check('Favori (ajout / retrait)', async () => {
   await click('#game .btns [data-act="fav"]'); await sleep(300);
   const on = await page.$eval('#game .btns [data-act="fav"]', (e) => e.getAttribute('aria-label'));
   await click('#game .btns [data-act="fav"]'); await sleep(300);
-  assert(/Retirer/.test(on), 'favori non appliqué');
+  assert(/Retirer|Unfavorite/.test(on), 'favori non appliqué');
   return 'OK';
 });
 
@@ -252,10 +252,10 @@ await check('Note façon Letterboxd + coup de cœur', async () => {
     return page.evaluate(() => { const b = document.querySelector('.rate .star[data-v="4"]'); const r = b.getBoundingClientRect(); return { x: r.left + r.width * 0.25, y: r.top + r.height / 2 }; });
   };
   let p;
-  if (!/Pas encore/.test(await text('.rate .rv'))) { p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300); }
+  for (let i = 0; i < 3 && (await page.$('.rate .rv')); i++) { p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300); }
   p = await pt(); await page.mouse.click(p.x, p.y); await sleep(400);
   const t1 = await text('.rate .rv');
-  assert(/3,5/.test(t1), `demi-étoile non prise : ${t1}`);
+  assert(/3[.,]5/.test(t1), `demi-étoile non prise : ${t1}`);
   await click('.rate .heart'); await sleep(300);
   const h = await page.$eval('.rate .heart', (e) => e.getAttribute('aria-pressed'));
   assert(h === 'true', 'cœur non activé');
@@ -263,16 +263,15 @@ await check('Note façon Letterboxd + coup de cœur', async () => {
   assert(await page.$('#review-ta'), 'onglet avis absent');
   p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300);
   await click('.rate .heart'); await sleep(300);
-  const t2 = await text('.rate .rv');
-  assert(/Pas encore|Clique/.test(t2), `note non effacée : ${t2}`);
+  assert(!(await page.$('.rate .rv')), 'note non effacée');
   return 'demi-étoile, cœur, avis et effacement OK';
 });
 
 await check('Durée HowLongToBeat', async () => {
   for (let i = 0; i < 20 && !(await page.$('.hl')); i++) await sleep(500);
   const t = await page.$eval('.gside', (e) => e.innerText.replace(/\s+/g, ' '));
-  assert(/POUR FINIR/.test(t), 'carte HowLongToBeat absente');
-  return (t.match(/POUR FINIR.*?100 %/)?.[0] || t).slice(0, 140);
+  assert(/POUR FINIR|TIME TO BEAT/.test(t), 'carte HowLongToBeat absente');
+  return t.slice(0, 120);
 });
 
 await check('Retour à l\'accueil (Échap)', async () => {
@@ -283,6 +282,10 @@ await check('Retour à l\'accueil (Échap)', async () => {
 
 await check('Apparence : accent fixe et taille des jaquettes', async () => {
   const cols = async () => page.evaluate(() => getComputedStyle(document.querySelector('#vgrid .grid')).gridTemplateColumns.split(' ').length);
+  await click('[data-act="settings"]');
+  const orig = await page.$eval('[data-act="size"][aria-pressed="true"]', (e) => e.dataset.v);
+  await click('[data-act="size"][data-v="M"]');
+  await page.keyboard.press('Escape'); await sleep(500);
   const c0 = await cols();
   await click('[data-act="settings"]');
   await click('[data-act="acc-mode"][data-v="fixed"]');
@@ -292,7 +295,7 @@ await check('Apparence : accent fixe et taille des jaquettes', async () => {
   await page.keyboard.press('Escape'); await sleep(500);
   const c1 = await cols();
   await click('[data-act="settings"]');
-  await click('[data-act="size"][data-v="M"]');
+  await click(`[data-act="size"][data-v="${orig}"]`);
   await click('[data-act="acc-mode"][data-v="dyn"]');
   await page.keyboard.press('Escape'); await sleep(400);
   assert(a.toUpperCase() === '#3EE6A8', `accent fixe non appliqué : ${a}`);

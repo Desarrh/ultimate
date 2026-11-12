@@ -402,7 +402,8 @@ fn track(app: AppHandle, id: String, dir: String) {
                 let app2 = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Ok((n, _)) = backup_game(&app2, &g).await {
-                        notify(&app2, &format!("Sauvegarde de {}", g.name), &format!("{n} fichier(s) copié(s) après ta session."));
+                        let fr = user(&app2.state::<AppState>()).lang == "fr";
+                        notify(&app2, &g.name, &if fr { format!("Sauvegarde : {n} fichier(s)") } else { format!("Backup: {n} file(s)") });
                     }
                 });
             }
@@ -471,11 +472,11 @@ async fn game_achievements(http: &reqwest::Client, g: &Game) -> accounts::AchLis
         return accounts::epic_achievements(http, ns).await;
     }
     if g.source != "steam" {
-        return none("Pas de succès disponibles pour ce jeu.");
+        return none("Aucun succès.");
     }
     match (g.steam_appid, accounts::secret("steam_key"), scan::steam_id()) {
         (Some(a), Some(k), Some(sid)) => accounts::steam_achievements(http, &k, sid, a).await,
-        _ => none("Ajoute ta clé d'API Steam dans les Paramètres pour voir tes succès."),
+        _ => none("Clé Steam requise (Paramètres)."),
     }
 }
 
@@ -635,10 +636,11 @@ pub struct User {
     /// Letterboxd-style ratings: id -> { stars (0.5..5), heart, review, date }
     ratings: HashMap<String, serde_json::Value>,
     update_url: Option<String>,
+    lang: String,
 }
 impl Default for User {
     fn default() -> Self {
-        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None }
+        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None, lang: "en".into() }
     }
 }
 
@@ -662,6 +664,7 @@ fn set_user(st: State<AppState>, mut u: User) -> Result<(), String> {
     u.seen_free = old.seen_free;
     u.seen_deals = old.seen_deals;
     set_autostart(u.autostart)?;
+    accounts::FR.store(u.lang == "fr", std::sync::atomic::Ordering::Relaxed);
     save(&user_path(&st), &u);
     Ok(())
 }
@@ -792,7 +795,7 @@ async fn backup_game(app: &AppHandle, g: &Game) -> Result<(u64, PathBuf), String
 async fn backup_save(app: AppHandle, id: String) -> Result<String, String> {
     let g = app.state::<AppState>().lib.lock().unwrap().iter().find(|g| g.id == id).cloned().ok_or("Jeu introuvable")?;
     let (n, p) = backup_game(&app, &g).await?;
-    Ok(format!("{n} fichier{} sauvegardé{} dans {}", if n > 1 { "s" } else { "" }, if n > 1 { "s" } else { "" }, p.display()))
+    Ok(format!("{n} → {}", p.display()))
 }
 
 #[tauri::command]
@@ -844,14 +847,14 @@ async fn watch_deals(app: AppHandle) {
                 }
             }
             if !new_free.is_empty() {
-                notify(&app, "Jeux gratuits à récupérer", &new_free.join(", "));
+                notify(&app, if u.lang == "fr" { "Jeux gratuits" } else { "Free games" }, &new_free.join(", "));
             }
             if let Ok((k, s)) = steam_creds() {
                 if let Ok(w) = extra::wishlist(&http, &k, s).await {
                     let hot: Vec<_> = w.iter().filter(|d| d.discount >= 20 && !u.seen_deals.contains(&format!("{}:{}", d.appid, d.discount))).collect();
                     if !hot.is_empty() {
                         let names: Vec<String> = hot.iter().take(4).map(|d| format!("{} -{} %", d.name, d.discount)).collect();
-                        notify(&app, "Promos sur ta liste de souhaits", &names.join(", "));
+                        notify(&app, if u.lang == "fr" { "Promos" } else { "Deals" }, &names.join(", "));
                         for d in hot {
                             u.seen_deals.push(format!("{}:{}", d.appid, d.discount));
                         }
@@ -1091,8 +1094,10 @@ pub fn run() {
             });
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-            let open = MenuItem::with_id(app, "open", "Ouvrir la bibliothèque", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
+            let fr = load::<User>(&app.state::<AppState>().dir.join("user.json")).lang == "fr";
+            accounts::FR.store(fr, std::sync::atomic::Ordering::Relaxed);
+            let open = MenuItem::with_id(app, "open", if fr { "Ouvrir" } else { "Open" }, true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", if fr { "Quitter" } else { "Quit" }, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().expect("icon"))

@@ -354,3 +354,7 @@ body.big .home-head h1 { font-size: 80px; }
 body.noglass .glass, body.noglass .solid { backdrop-filter: none !important; background: rgba(18,18,24,.94); }
 body.nomotion *, body.nomotion *::before, body.nomotion *::after { transition: none !important; animation: none !important; }
 .rate .alink { align-self: center; }
+.srow { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 14px; font-weight: 600; }
+.submenu { top: -8px; bottom: auto; }
+.dialog .box { gap: 14px; }
+.dialog .box h3 { font-size: 16px; }
