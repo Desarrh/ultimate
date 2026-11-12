@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const S = {
-  games: [], memos: {}, news: {}, free: null, steamFree: null, achsum: {}, ach: {}, shots: {}, history: {},
+  games: [], memos: {}, news: {}, free: null, steamFree: null, gogFree: null, achsum: {}, ach: {}, shots: {}, history: {},
   acc: { steamKey: false, steamId: null, epic: null },
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
@@ -225,18 +225,29 @@ function filtered() {
 }
 const SORTS = [['recent', 'Joués récemment'], ['hours', 'Temps de jeu'], ['pct', 'Complétion des succès'], ['az', 'Alphabétique'], ['size', 'Taille sur disque']];
 
+const normN = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Every free-to-keep offer, all stores, flagged when already in the library. */
+function freeItems() {
+  const owned = (store, name, appid) => S.games.some((g) => (appid && g.steamAppid === appid && g.source === 'steam') || (g.source === store && normN(g.name) === normN(name)));
+  const epic = (S.free || []).map((x) => ({ store: 'Epic', name: x.title, img: x.image, url: x.url, until: x.until, upcoming: x.upcoming, owned: !x.upcoming && owned('epic', x.title) }));
+  const steam = (S.steamFree || []).map((d) => ({ store: 'Steam', name: d.name, img: d.cover, url: `https://store.steampowered.com/app/${d.appid}`, until: '', upcoming: false, owned: owned('steam', d.name, d.appid) }));
+  const gog = (S.gogFree || []).map((x) => ({ store: 'GOG', name: x.title, img: x.image, url: x.url, until: '', upcoming: false, owned: owned('gog', x.title) }));
+  return [...epic, ...steam, ...gog];
+}
+const untilTxt = (x) => (x.until ? `${x.upcoming ? 'À partir du' : "Jusqu'au"} ${new Date(x.until).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : '');
+
 function dealsRow() {
   const w = (S.wishlist || []).filter((d) => d.discount > 0).slice(0, 12);
-  const free = (S.steamFree || []).concat((S.free || []).filter((x) => !x.upcoming).map((x) => ({ name: x.title, img: x.image, url: x.url, free: true })));
+  const free = freeItems().filter((x) => !x.upcoming).sort((a, b) => a.owned - b.owned);
   if (!w.length && !free.length) return '';
   return `<section class="deals-wrap">
-    <div class="cols-head"><div><h2>Bons plans</h2><span class="muted">Jeux gratuits à récupérer et promos de ta liste de souhaits Steam</span></div></div>
+    <div class="cols-head"><div><h2>Bons plans</h2><span class="muted">Jeux offerts sur Epic, Steam et GOG, et promos de ta liste de souhaits Steam</span></div></div>
     <div class="deals">
-      ${free.map((d) => `<button class="deal glass" data-act="url" data-v="${esc(d.url || `https://store.steampowered.com/app/${d.appid}`)}">
-        <span class="dimg">${d.img || d.cover ? `<img src="${esc(th(d.img || d.cover, 360))}" alt="" loading="lazy">` : ''}</span>
-        <span class="dt"><b>${esc(d.name)}</b><span class="tagfree">GRATUIT</span></span></button>`).join('')}
+      ${free.map((d) => `<button class="deal glass${d.owned ? ' owned' : ''}" data-act="url" data-v="${esc(d.url)}">
+        <span class="dimg">${d.img ? `<img src="${esc(th(d.img, 360))}" alt="" loading="lazy">` : ''}<span class="store">${d.store}</span></span>
+        <span class="dt"><b>${esc(d.name)}</b>${d.owned ? '<span class="tagown">DÉJÀ À TOI</span>' : '<span class="tagfree">GRATUIT</span>'}<span class="muted" style="font-size:12px">${esc(untilTxt(d))}</span></span></button>`).join('')}
       ${w.map((d) => `<button class="deal glass" data-act="url" data-v="https://store.steampowered.com/app/${d.appid}">
-        <span class="dimg">${d.cover ? `<img src="${esc(th(d.cover, 300))}" alt="" loading="lazy">` : ''}<span class="off">-${d.discount} %</span></span>
+        <span class="dimg">${d.cover ? `<img src="${esc(th(d.cover, 360))}" alt="" loading="lazy">` : ''}<span class="off">-${d.discount} %</span></span>
         <span class="dt"><b>${esc(d.name)}</b><span><s class="muted">${esc(d.original)}</s> <strong>${esc(d.price)}</strong></span></span></button>`).join('')}
     </div></section>`;
 }
@@ -568,25 +579,25 @@ function renderStats() {
 // ---------- menus & modal ----------
 
 function renderFree() {
-  const f = S.free;
-  const now = (f || []).filter((x) => !x.upcoming);
-  const sf = S.steamFree || [];
+  const all = freeItems();
+  const todo = all.filter((x) => !x.upcoming && !x.owned).length;
   const b = $('#free-badge');
-  b.hidden = !(now.length + sf.length);
-  b.textContent = now.length + sf.length;
+  b.hidden = !todo;
+  b.textContent = todo;
   if (S.menu !== 'free') { $('#free-menu').innerHTML = ''; return; }
-  const row = (x) => `<div class="free-item">
-      ${x.image ? `<img src="${esc(th(x.image, 240))}" alt="">` : '<span style="width:110px;height:62px"></span>'}
-      <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="t">${esc(x.title)}</span>
-      <span class="s">${x.upcoming ? 'Gratuit à partir du' : "Gratuit jusqu'au"} ${x.until ? new Date(x.until).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : '—'}</span></span>
-      ${x.upcoming ? '' : `<button class="claim" data-act="url" data-v="${esc(x.url)}">Récupérer</button>`}
+  const row = (x) => `<div class="free-item${x.owned ? ' owned' : ''}">
+      ${x.img ? `<img src="${esc(th(x.img, 240))}" alt="">` : '<span style="width:110px;height:62px;border-radius:8px;background:#222;flex:none"></span>'}
+      <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="t">${esc(x.name)}</span><span class="s">${esc(untilTxt(x) || 'Offre limitée')}</span></span>
+      ${x.upcoming ? '' : x.owned ? '<span class="tagown" style="margin-left:auto">DÉJÀ À TOI</span>' : `<button class="claim" data-act="url" data-v="${esc(x.url)}">Récupérer</button>`}
     </div>`;
-  $('#free-menu').innerHTML = `<div class="menu solid" style="right:0;top:54px;width:440px;padding:12px">
-    <span class="mh">EPIC GAMES · GRATUITS CETTE SEMAINE</span>
-    ${f === null ? '<span class="muted" style="padding:12px">Chargement…</span>' : now.length ? now.map(row).join('') : '<span class="muted" style="padding:12px">Rien cette semaine.</span>'}
-    ${(f || []).some((x) => x.upcoming) ? `<span class="mh">BIENTÔT SUR EPIC</span>${f.filter((x) => x.upcoming).map(row).join('')}` : ''}
-    <div class="sep"></div><span class="mh">STEAM · 100 % DE RÉDUCTION</span>
-    ${sf.length ? sf.map((d) => row({ title: d.name, image: d.cover, url: `https://store.steampowered.com/app/${d.appid}`, until: '' })).join('') : '<span class="muted" style="padding:12px">Aucun jeu Steam offert en ce moment.</span>'}
+  const sec = (store, list, empty) => `<span class="mh">${store}</span>${list.length ? list.map(row).join('') : `<span class="muted" style="padding:6px 12px 10px">${empty}</span>`}`;
+  const loading = S.free === null && S.steamFree === null && S.gogFree === null;
+  $('#free-menu').innerHTML = `<div class="menu solid" style="right:0;top:54px;width:460px;max-height:75vh;overflow:auto;padding:12px">
+    ${loading ? '<span class="muted" style="padding:12px">Chargement…</span>' : `
+    ${sec('EPIC GAMES · CETTE SEMAINE', all.filter((x) => x.store === 'Epic' && !x.upcoming), S.free === null ? 'Chargement…' : 'Rien cette semaine.')}
+    ${all.some((x) => x.store === 'Epic' && x.upcoming) ? sec('EPIC GAMES · BIENTÔT', all.filter((x) => x.store === 'Epic' && x.upcoming), '') : ''}
+    <div class="sep"></div>${sec('STEAM · 100 % DE RÉDUCTION', all.filter((x) => x.store === 'Steam'), 'Aucun jeu offert en ce moment.')}
+    <div class="sep"></div>${sec('GOG · GIVEAWAYS', all.filter((x) => x.store === 'GOG'), 'Aucun jeu offert en ce moment.')}`}
   </div>`;
 }
 
@@ -947,5 +958,6 @@ function onLibrary(list) {
   refresh();
   loadSocial();
   invoke('free_games').then((f) => { S.free = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => {});
-  invoke('steam_free_games').then((f) => { S.steamFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => {});
+  invoke('steam_free_games').then((f) => { S.steamFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.steamFree = []; });
+  invoke('gog_free_games').then((f) => { S.gogFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.gogFree = []; });
 })();

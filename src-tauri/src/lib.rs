@@ -693,6 +693,12 @@ async fn steam_free_games(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn gog_free_games(app: AppHandle) -> Result<serde_json::Value, String> {
+    let http = app.state::<AppState>().http.clone();
+    Ok(serde_json::to_value(extra::gog_free(&http).await).unwrap_or_default())
+}
+
+#[tauri::command]
 fn screenshots(st: State<AppState>, id: String) -> Vec<String> {
     let appid = st.lib.lock().unwrap().iter().find(|g| g.id == id).and_then(|g| if g.source == "steam" { g.steam_appid } else { None });
     match appid {
@@ -771,6 +777,15 @@ async fn watch_deals(app: AppHandle) {
                 if !u.seen_free.contains(&k) {
                     u.seen_free.push(k);
                     new_free.push(format!("{} (Steam)", d.name));
+                }
+            }
+            if let Ok(v) = serde_json::to_value(extra::gog_free(&http).await) {
+                for f in v.as_array().into_iter().flatten() {
+                    let t = f.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if !t.is_empty() && !u.seen_free.contains(&format!("gog:{t}")) {
+                        u.seen_free.push(format!("gog:{t}"));
+                        new_free.push(format!("{t} (GOG)"));
+                    }
                 }
             }
             if !new_free.is_empty() {
@@ -885,7 +900,7 @@ pub fn run() {
             tauri::async_runtime::spawn(watch_deals(app.handle().clone()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, screenshots, open_path, backup_save, open_backups])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }

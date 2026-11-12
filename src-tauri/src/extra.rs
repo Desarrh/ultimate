@@ -56,7 +56,8 @@ async fn prices(c: &Client, ids: &[u32]) -> Vec<Deal> {
             let o = it.get("best_purchase_option");
             let s = |k: &str| o.and_then(|o| o.get(k)).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let fmt = it.pointer("/assets/asset_url_format").and_then(|v| v.as_str()).unwrap_or("");
-            let cap = it.pointer("/assets/library_capsule").and_then(|v| v.as_str());
+            // DLC and some games have no vertical capsule: fall back to the wide ones
+            let cap = ["library_capsule", "main_capsule", "header", "small_capsule"].iter().find_map(|k| it.pointer(&format!("/assets/{k}")).and_then(|v| v.as_str()));
             out.push(Deal {
                 appid: appid as u32,
                 name: it.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -100,4 +101,20 @@ pub fn screenshots(steam_root: Option<PathBuf>, account: Option<u64>, appid: u32
         .collect();
     v.sort_by(|a, b| b.0.cmp(&a.0));
     v.into_iter().take(120).map(|x| x.1).collect()
+}
+
+#[derive(Serialize)]
+pub struct GogFree { title: String, image: String, url: String }
+
+/// GOG giveaways / games at 100 % off.
+pub async fn gog_free(c: &Client) -> Vec<GogFree> {
+    let url = "https://catalog.gog.com/v1/catalog?limit=24&price=between:0,0&discounted=eq:true&productType=in:game,pack,dlc&countryCode=FR&locale=fr-FR&currencyCode=EUR";
+    let Some(j) = get(c, url).await else { return vec![] };
+    j.get("products").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|p| {
+        Some(GogFree {
+            title: p.get("title")?.as_str()?.to_string(),
+            image: p.get("coverHorizontal").or_else(|| p.get("coverVertical")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            url: p.get("storeLink").and_then(|v| v.as_str()).unwrap_or("https://www.gog.com/fr/games?priceRange=0,0&discounted=true").to_string(),
+        })
+    }).collect()).unwrap_or_default()
 }

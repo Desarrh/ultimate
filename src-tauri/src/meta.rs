@@ -235,8 +235,15 @@ pub async fn news(c: &Client, appid: u32) -> Vec<News> {
 pub struct Free { title: String, image: String, url: String, until: String, upcoming: bool }
 
 pub async fn epic_free(c: &Client) -> Vec<Free> {
-    let url = "https://store-site-backend-static.epicgames.com/freeGamesPromotions?locale=fr&country=FR&allowCountries=FR";
-    let Some(j) = get_json(c, url).await else { return vec![] };
+    // the main host is blocked by some DNS filters: fall back to the IPv4 CDN host
+    let mut j = None;
+    for host in ["store-site-backend-static.epicgames.com", "store-site-backend-static-ipv4.ak.epicgames.com"] {
+        j = get_json(c, &format!("https://{host}/freeGamesPromotions?locale=fr&country=FR&allowCountries=FR")).await;
+        if j.is_some() {
+            break;
+        }
+    }
+    let Some(j) = j else { return vec![] };
     let Some(els) = j.pointer("/data/Catalog/searchStore/elements").and_then(|v| v.as_array()) else { return vec![] };
     let mut out = Vec::new();
     for e in els {
