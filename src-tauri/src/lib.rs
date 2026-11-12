@@ -682,6 +682,13 @@ fn set_wallpaper(st: State<AppState>, data_url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Dominant colours of a local picture (custom wallpaper): [accent, deep].
+#[tauri::command]
+async fn image_accent(path: String) -> Option<[String; 2]> {
+    let bytes = fs::read(&path).ok()?;
+    tauri::async_runtime::spawn_blocking(move || meta::accent(&bytes)).await.ok().flatten().map(|(a, d)| [a, d])
+}
+
 #[tauri::command]
 fn get_wallpaper(st: State<AppState>) -> Option<String> {
     fs::read_dir(&st.dir).ok()?.flatten()
@@ -1204,7 +1211,7 @@ pub fn run() {
             watch_pc(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }

@@ -16,7 +16,9 @@ img { display: block; }
 .muted { color: var(--muted); font-size: 14px; }
 .glass { background: rgba(10,10,14,.55); backdrop-filter: blur(18px); border: 1px solid var(--line); }
 .solid { background: rgba(18,18,24,.97); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.14); box-shadow: 0 24px 60px rgba(0,0,0,.6); }
-::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 5px; }
+::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-track { background: var(--d); }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--a) 45%, rgba(255,255,255,.12)); border-radius: 5px; border: 2px solid var(--d); }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--a) 70%, transparent); }
 h2 { margin: 0 0 4px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; letter-spacing: -.01em; }
 
 /* ambient background (both views) */

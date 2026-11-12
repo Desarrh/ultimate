@@ -18,7 +18,10 @@ const P = (() => {
   try { return { ...d, ...JSON.parse(localStorage.getItem('prefs') || '{}') }; } catch { return d; }
 })();
 const savePrefs = () => { try { localStorage.setItem('prefs', JSON.stringify(P)); } catch { /* ignore */ } };
-let wpPath = null;
+let wpPath = null, wpTint = null; // custom wallpaper and its dominant colours [accent, deep]
+const loadWpTint = async () => { wpTint = wpPath ? await invoke('image_accent', { path: wpPath }).catch(() => null) : null; };
+/** Background tint of the library: the wallpaper's own colour when one is set, else the collection's. */
+const libDeep = () => { if (P.wp === 'file' && wpTint) return wpTint[1]; const g = P.wp === 'game' && S.games.find((x) => x.id === P.wpGame); return g?.deep || undefined; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const SRC = { steam: 'Steam', epic: 'Epic', gog: 'GOG', pc: 'PC' };
 const CAT = {
@@ -384,7 +387,7 @@ function renderHome() { S.homeDirty = false; keepScroll($('#home'), paintHome); 
 function homeTheme() {
   const all = S.games.filter(isGame);
   const last = [...all].filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed)[0];
-  theme(catColor(S.col));
+  theme(catColor(S.col), libDeep());
   const wpG = P.wp === 'game' && S.games.find((x) => x.id === P.wpGame);
   if (P.wp === 'file' && wpPath) setBg(loc(wpPath, P.wpBlur > 8 ? 1280 : bgW()), false, true);
   else if (wpG) setBg(th(wpG.hero || wpG.cover, P.wpBlur > 8 ? 1280 : bgW()), false, true);
@@ -400,7 +403,7 @@ function paintHome() {
   const updates = all.filter((g) => g.update).length;
   const last = [...all].filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed)[0];
   const col = S.col;
-  theme(catColor(col));
+  theme(catColor(col), libDeep());
   const wpG = P.wp === 'game' && S.games.find((x) => x.id === P.wpGame);
   if (P.wp === 'file' && wpPath) setBg(loc(wpPath, P.wpBlur > 8 ? 1280 : bgW()), false, true);
   else if (wpG) setBg(th(wpG.hero || wpG.cover, P.wpBlur > 8 ? 1280 : bgW()), false, true);
@@ -1157,7 +1160,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'up-install': toast('Téléchargement de la mise à jour…'); invoke('install_update').catch((err) => toast(String(err))); return;
     case 'wp-mode': P.wp = v; savePrefs(); renderModal(); if (S.view === 'home') renderHome(); return;
-    case 'wp-clear': await invoke('set_wallpaper', { dataUrl: '' }); wpPath = null; renderModal(); if (S.view === 'home') renderHome(); return;
+    case 'wp-clear': await invoke('set_wallpaper', { dataUrl: '' }); wpPath = null; wpTint = null; renderModal(); if (S.view === 'home') renderHome(); return;
   }
   if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
 });
@@ -1227,7 +1230,7 @@ document.addEventListener('change', async (e) => {
   if (t.id === 'wp-file' && t.files[0]) {
     const f = t.files[0];
     const url = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(f); });
-    try { await invoke('set_wallpaper', { dataUrl: url }); wpPath = await invoke('get_wallpaper'); renderModal(); if (S.view === 'home') renderHome(); toast('Enregistré'); }
+    try { await invoke('set_wallpaper', { dataUrl: url }); wpPath = await invoke('get_wallpaper'); await loadWpTint(); renderModal(); if (S.view === 'home') renderHome(); toast('Enregistré'); }
     catch (err) { $('#wp-err').textContent = String(err); }
   }
 });
@@ -1299,7 +1302,7 @@ function onLibrary(list) {
   S.memos = memos; S.achsum = achsum; S.games = lib; S.user = { ...S.user, ...user };
   if (S.user.lang !== LANG) { S.user.lang = LANG; saveUser(); }
   startI18n();
-  try { wpPath = await invoke('get_wallpaper'); } catch { /* none */ }
+  try { wpPath = await invoke('get_wallpaper'); await loadWpTint(); } catch { /* none */ }
   render();
   if (P.big) getCurrentWindow().setFullscreen(true).catch(() => {});
   await listen('library', (e) => onLibrary(e.payload));
