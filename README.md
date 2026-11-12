@@ -39,6 +39,9 @@ Updates install from inside the app in one click (signed packages).
 - **Light on resources** — Rust core, artwork resized to the displayed size and cached, virtualised grid.
 - **English & French**, controller mode, system tray, start with Windows.
 
+<img src="docs/screenshots/game-page.png" alt="Game page" width="860">
+<p align="center"><sub>Game page: the colour follows the game, achievements, time to beat, rating, news</sub></p>
+
 <table>
 <tr>
 <td><img src="docs/screenshots/list-view.png" alt="List view"></td>
