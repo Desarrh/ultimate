@@ -538,18 +538,28 @@ async fn game_achievements(http: &reqwest::Client, g: &Game) -> accounts::AchLis
     }
 }
 
-fn store_sum(app: &AppHandle, id: &str, l: &accounts::AchList) {
+/// Records a game's achievement summary. Returns true if it changed.
+fn put_sum(app: &AppHandle, id: &str, l: &accounts::AchList) -> bool {
     if l.total == 0 {
-        return;
+        return false;
     }
     let st = app.state::<AppState>();
-    let m = {
-        let mut m = st.achsum.lock().unwrap();
-        m.insert(id.to_string(), [l.unlocked, l.total]);
-        m.clone()
-    };
+    let mut m = st.achsum.lock().unwrap();
+    m.insert(id.to_string(), [l.unlocked, l.total]) != Some([l.unlocked, l.total])
+}
+
+/// Saves and tells the interface (once per batch, not once per game).
+fn flush_sums(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let m = st.achsum.lock().unwrap().clone();
     save(&st.dir.join("achsum.json"), &m);
     let _ = app.emit("achsum", &m);
+}
+
+fn store_sum(app: &AppHandle, id: &str, l: &accounts::AchList) {
+    if put_sum(app, id, l) {
+        flush_sums(app);
+    }
 }
 
 #[tauri::command]
@@ -587,8 +597,20 @@ async fn sync_achievements(app: AppHandle) -> Result<(), String> {
         }
     }))
     .buffer_unordered(4);
+    // only changed summaries count, and the interface hears about them in batches
+    let (mut pending, mut last) = (0usize, std::time::Instant::now());
     while let Some((id, l)) = s.next().await {
-        store_sum(&app, &id, &l);
+        if put_sum(&app, &id, &l) {
+            pending += 1;
+        }
+        if pending > 0 && (pending >= 40 || last.elapsed() > std::time::Duration::from_secs(4)) {
+            flush_sums(&app);
+            pending = 0;
+            last = std::time::Instant::now();
+        }
+    }
+    if pending > 0 {
+        flush_sums(&app);
     }
     *st.ach_busy.lock().unwrap() = false;
     Ok(())

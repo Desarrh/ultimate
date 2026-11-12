@@ -201,9 +201,33 @@ function pumpIcons() {
   }
 }
 function mountGrid(list) {
-  VG.list = list; VG.first = VG.last = -1;
-  if (!$('#vgrid')) return;
+  VG.list = list;
+  const host = $('#vgrid'); if (!host) return;
+  if (!host.firstElementChild) { VG.first = VG.last = -1; VG.wrap = ''; VG.items = []; }
   layoutGrid(); paintGrid(true);
+}
+const frag = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content; };
+/** Re-renders a container of identical-looking items, replacing only the items whose HTML changed. */
+function patchItems(host, wrap, items) {
+  const box = host.firstElementChild;
+  if (box && VG.wrap === wrap && VG.items.length === items.length && box.children.length === items.length) {
+    items.forEach((h, i) => { if (VG.items[i] !== h) box.children[i].replaceWith(frag(h)); });
+  } else {
+    host.innerHTML = items.length ? `${wrap}${items.join('')}</div>` : '';
+  }
+  VG.wrap = wrap; VG.items = items;
+}
+/** Sets the page's top-level sections, keeping the DOM of sections that did not change. */
+function setSections(host, html) {
+  const next = [...frag(html).children];
+  const strs = next.map((n) => n.outerHTML);
+  const cur = [...host.children];
+  if (host.__secs && cur.length === next.length) {
+    next.forEach((n, i) => { if (host.__secs[i] !== strs[i]) cur[i].replaceWith(n); });
+  } else {
+    host.replaceChildren(...next);
+  }
+  host.__secs = strs;
 }
 const isList = () => S.layout === 'list';
 function layoutGrid() {
@@ -231,11 +255,11 @@ function paintGrid(force) {
   VG.first = first; VG.last = last;
   const items = VG.list.slice(first * VG.cols, last * VG.cols);
   if (isList()) {
-    host.innerHTML = items.length ? `<div class="lgrid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-auto-rows:${VG.cellH}px">${items.map(listRow).join('')}</div>` : '';
+    patchItems(host, `<div class="lgrid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-auto-rows:${VG.cellH}px">`, items.map(listRow));
     items.forEach(rowIcons);
     return;
   }
-  host.innerHTML = items.length ? `<div class="grid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-template-columns:repeat(${VG.cols},minmax(0,1fr));grid-auto-rows:${VG.cellH}px">${items.map(cover).join('')}</div>` : '';
+  patchItems(host, `<div class="grid" style="position:absolute;left:0;right:0;top:${first * VG.rowH}px;grid-template-columns:repeat(${VG.cols},minmax(0,1fr));grid-auto-rows:${VG.cellH}px">`, items.map(cover));
 }
 addEventListener('scroll', () => paintGrid(), { passive: true });
 addEventListener('resize', () => { if ($('#vgrid')) { layoutGrid(); paintGrid(true); } });
@@ -385,7 +409,7 @@ function paintHome() {
   const list = filtered();
   const lastMemo = last && S.memos[last.id];
 
-  $('#home').innerHTML = `
+  setSections($('#home'), `
     <section class="home-head">
       <div>
         <h1>Bibliothèque</h1>
@@ -450,7 +474,7 @@ function paintHome() {
         </div>
       </div>
       ${list.length ? '<div id="vgrid" class="vgrid"></div>' : `<div class="grid"><div class="empty">${S.games.length ? 'Aucun jeu ne correspond.' : S.busy ? 'Analyse…' : 'Aucun jeu détecté.'}</div></div>`}
-    </section>`;
+    </section>`);
   layoutGrid();
   sortMenu();
   mountGrid(list);
@@ -1089,7 +1113,7 @@ document.addEventListener('click', async (e) => {
     case 'heart': {
       const cur0 = rating(g.id) || {};
       S.user.ratings = { ...(S.user.ratings || {}), [g.id]: { ...cur0, heart: !cur0.heart, date: cur0.date || Math.floor(Date.now() / 1000) } };
-      saveUser(); renderGame(); if (!cur0.heart)  return;
+      saveUser(); renderGame(); return;
     }
     case 'save-review': {
       const cur0 = rating(g.id) || {};
@@ -1256,12 +1280,18 @@ requestAnimationFrame(pollPad);
 
 // ---------- boot ----------
 
-let pending = false;
+// Background updates (scan, achievements, colours) arrive in bursts: rebuild the library at most
+// once per second, so hover effects under the cursor are not restarted again and again.
+let pending = null, lastPaint = 0;
 function onLibrary(list) {
   S.games = list;
   if (pending) return;
-  pending = true;
-  requestAnimationFrame(() => { pending = false; renderTop(); if (S.view === 'home') renderHome(); else S.homeDirty = true; });
+  const wait = Math.max(0, 1000 - (performance.now() - lastPaint));
+  pending = setTimeout(() => {
+    pending = null; lastPaint = performance.now();
+    renderTop();
+    if (S.view === 'home') renderHome(); else S.homeDirty = true;
+  }, wait);
 }
 
 (async () => {

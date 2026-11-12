@@ -12,7 +12,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222', defaultViewport: null });
 const page = (await browser.pages()).find((p) => !p.url().startsWith('devtools')) ;
-page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+page.on('pageerror', (e) => errors.push(`pageerror: ${e.message} @ ${(e.stack || '').split(String.fromCharCode(10))[1]?.trim() || ''}`));
 let missing404 = 0;
 page.on('console', (m) => { if (m.type() !== 'error') return; if (/status of 404/.test(m.text())) { missing404++; return; } errors.push(`console: ${m.text()}`); });
 page.on('requestfailed', (r) => { if (!r.url().includes('fonts.g')) errors.push(`request failed: ${r.url().slice(0, 140)} (${r.failure()?.errorText})`); });
@@ -39,6 +39,18 @@ const clickKeep = async (sel) => { const ok = await page.evaluate((x) => { const
 const count = (sel) => page.$$eval(sel, (l) => l.length);
 const text = (sel) => page.$eval(sel, (e) => e.textContent.trim());
 const assert = (c, m) => { if (!c) throw new Error(m); };
+
+// The test clicks real buttons: snapshot the user's data and display settings, restore them at the end.
+const snapshot = await page.evaluate(async () => ({ user: await window.__TAURI_INTERNALS__.invoke('get_user'), prefs: localStorage.getItem('prefs') }));
+async function restore() {
+  await page.evaluate(async (snap) => {
+    await window.__TAURI_INTERNALS__.invoke('set_user', { u: snap.user });
+    if (snap.prefs !== null) localStorage.setItem('prefs', snap.prefs);
+    location.reload();
+  }, snapshot).catch(() => {});
+  await sleep(3000);
+}
+process.on('uncaughtException', async (e) => { console.error(e); await restore(); process.exit(1); });
 
 // wait for the background refresh to finish
 for (let i = 0; i < 120; i++) { if (!(await page.$('#refresh-btn.spin'))) break; await sleep(1000); }
@@ -264,9 +276,10 @@ await check('Note façon Letterboxd + coup de cœur', async () => {
   p = await pt(); await page.mouse.click(p.x, p.y); await sleep(400);
   const t1 = await text('.rate .rv');
   assert(/3[.,]5/.test(t1), `demi-étoile non prise : ${t1}`);
+  const h0 = await page.$eval('.rate .heart', (e) => e.getAttribute('aria-pressed'));
   await click('.rate .heart'); await sleep(300);
   const h = await page.$eval('.rate .heart', (e) => e.getAttribute('aria-pressed'));
-  assert(h === 'true', 'cœur non activé');
+  assert(h !== h0, 'cœur non basculé');
   await click('.tab[data-v="review"]'); await sleep(400);
   assert(await page.$('#review-ta'), 'onglet avis absent');
   p = await pt(); await page.mouse.click(p.x, p.y); await sleep(300);
@@ -404,6 +417,14 @@ await check('Mémoire', async () => {
   return m ? `tas JS ${m} Mo` : 'n/d';
 });
 
+await restore();
+const after = await page.evaluate(async () => ({ user: await window.__TAURI_INTERNALS__.invoke('get_user'), prefs: localStorage.getItem('prefs') }));
+// compare ignoring key order (the Rust side stores ratings in a hash map)
+const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+const same = canon(after.user.ratings) === canon(snapshot.user.ratings) && canon(after.user.favorites) === canon(snapshot.user.favorites)
+  && canon(after.user.collections) === canon(snapshot.user.collections) && canon(JSON.parse(after.prefs || 'null')) === canon(JSON.parse(snapshot.prefs || 'null'));
+results.push({ ok: same, name: "Données de l'utilisateur remises comme avant", detail: same ? 'notes, favoris, collections, affichage identiques' : 'DIFFÉRENCE' });
+console.log(`${same ? '✔' : '✘'} Données de l'utilisateur remises comme avant`);
 const ok = results.filter((r) => r.ok).length;
 console.log(`\n${ok}/${results.length} vérifications OK`);
 const uniq = [...new Set(errors)];
