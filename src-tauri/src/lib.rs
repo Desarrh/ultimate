@@ -77,7 +77,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn open_target(t: &str) -> Result<(), String> {
     let ext = PathBuf::from(t).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if t.contains("://") || (!t.contains("://") && ["lnk", "url", "bat"].contains(&ext.as_str())) {
+    if t.contains("://") || ["lnk", "url", "bat"].contains(&ext.as_str()) {
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", t])
             .creation_flags(CREATE_NO_WINDOW)
@@ -347,9 +347,47 @@ fn wants_admin(u: &User, g: &Game) -> bool {
     can && u.admin_games.get(&g.id).copied().unwrap_or(g.source == "pc" && exe.ends_with(".exe"))
 }
 
-/// Games running with the Vigie game mode on: `--avant-jeu` when the first starts,
-/// `--apres-jeu` when the last one closes.
-static GAME_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Vigie game mode across sessions: `--avant-jeu` when the first game is launched, `--apres-jeu`
+/// when the last one closes, and only if a game was actually seen running (a game never seen, e.g.
+/// started elsewhere than its folder, must not wake everything up mid-game after 240 s).
+struct GameMode {
+    active: std::sync::atomic::AtomicUsize,
+    seen: std::sync::atomic::AtomicBool,
+}
+impl GameMode {
+    const fn new() -> Self {
+        GameMode { active: std::sync::atomic::AtomicUsize::new(0), seen: std::sync::atomic::AtomicBool::new(false) }
+    }
+    /// A session starts; true = send `--avant-jeu`.
+    fn start(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.active.fetch_add(1, SeqCst) == 0 {
+            self.seen.store(false, SeqCst);
+            return true;
+        }
+        false
+    }
+    /// The game of a session was seen running.
+    fn seen(&self) {
+        self.seen.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// A session ends (seen or not); true = send `--apres-jeu`.
+    fn end(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut n = self.active.load(SeqCst);
+        loop {
+            if n == 0 {
+                return false;
+            }
+            match self.active.compare_exchange(n, n - 1, SeqCst, SeqCst) {
+                Ok(_) => break,
+                Err(now) => n = now,
+            }
+        }
+        n == 1 && self.seen.swap(false, SeqCst)
+    }
+}
+static GAME_SESSIONS: GameMode = GameMode::new();
 
 /// Runs a Vigie command in the background (never awaited) and shows its one-line summary.
 fn vigie_bg(app: &AppHandle, args: Vec<&'static str>, timeout_s: u64) {
@@ -373,25 +411,52 @@ fn game_mode_on(app: &AppHandle) -> bool {
     u.game_mode && vigie::find(u.vigie_path.as_deref()).map(|e| vigie::caps(&e).game_mode).unwrap_or(false)
 }
 
+/// Before running a hand-added exe as admin: has it changed since it was added (or last confirmed)?
+/// Ok = go; Err("exe-changed") = ask the user first (Ultimate shows a confirmation, then calls
+/// `launch` again with `confirm`). A confirmed or first-seen fingerprint is saved.
+fn check_admin_exe(st: &AppState, g: &Game, confirm: bool) -> Result<(), String> {
+    if g.source != "pc" || !g.launch.to_lowercase().ends_with(".exe") {
+        return Ok(());
+    }
+    let mut list = customs(st);
+    let Some(c) = list.iter_mut().find(|c| c.id == g.id) else { return Ok(()) };
+    let now = exe_fingerprint(&c.exe);
+    if c.fp.is_some() && c.fp != now && !confirm {
+        return Err("exe-changed".into());
+    }
+    if c.fp != now {
+        c.fp = now;
+        save(&st.dir.join("custom.json"), &list);
+    }
+    Ok(())
+}
+
 #[tauri::command]
-async fn launch(app: AppHandle, id: String) -> Result<(), String> {
+async fn launch(app: AppHandle, id: String, confirm: Option<bool>) -> Result<(), String> {
     let st = app.state::<AppState>();
     let g = st.lib.lock().unwrap().iter().find(|g| g.id == id).cloned().ok_or("Jeu introuvable")?;
     if !vigie::allowed(std::path::Path::new(&g.launch)) {
         return Err("Mode test : lancement bloqué hors du bac à sable".into());
     }
     let admin = wants_admin(&user(&st), &g);
+    if admin {
+        check_admin_exe(&st, &g, confirm.unwrap_or(false))?;
+    }
     let target = g.launch.clone();
     // off the main thread: the UAC prompt blocks ShellExecuteEx until it is answered
     tauri::async_runtime::spawn_blocking(move || if admin { win::run_as_admin(&target) } else { open_target(&target) })
         .await
         .map_err(|e| e.to_string())??;
     let Some(dir) = g.install_path.filter(|_| g.installed) else { return Ok(()) };
+    // a hand-added shortcut (.lnk, .url, .bat) says nothing about where the game runs: not followed
+    if g.source == "pc" && !g.launch.to_lowercase().ends_with(".exe") {
+        return Ok(());
+    }
     if !st.tracking.lock().unwrap().insert(id.clone()) {
         return Ok(()); // already running and watched
     }
     let game_mode = tauri::async_runtime::spawn_blocking({ let app = app.clone(); move || game_mode_on(&app) }).await.unwrap_or(false);
-    if game_mode && GAME_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+    if game_mode && GAME_SESSIONS.start() {
         vigie_bg(&app, vec!["--avant-jeu"], 45);
     }
     // hand-added games are timed by watch_pc (also when started outside Ultimate): here we only
@@ -554,7 +619,7 @@ fn watch_pc(app: AppHandle) {
             if games.is_empty() && running.is_empty() {
                 continue;
             }
-            // win::exe_paths also sees games started as admin (sysinfo does not)
+            // win::exe_paths also sees games started as admin
             let live: HashSet<String> = win::exe_paths().into_iter().collect();
             let mut changed = false;
             for (id, exe) in &games {
@@ -609,7 +674,7 @@ fn track(app: AppHandle, id: String, dir: String, count: bool, game_mode: bool) 
         let running = || win::exe_paths().iter().any(|e| e.starts_with(&dir));
         let st = app.state::<AppState>();
         let end_game_mode = || {
-            if game_mode && GAME_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            if game_mode && GAME_SESSIONS.end() {
                 vigie_bg(&app, vec!["--apres-jeu"], 30);
             }
         };
@@ -622,6 +687,9 @@ fn track(app: AppHandle, id: String, dir: String, count: bool, game_mode: bool) 
                 end_game_mode();
                 return;
             }
+        }
+        if game_mode {
+            GAME_SESSIONS.seen();
         }
         let start = Instant::now();
         while running() {
@@ -956,9 +1024,12 @@ fn set_user(st: State<AppState>, mut u: User) -> Result<(), String> {
     let old = user(&st);
     u.seen_free = old.seen_free;
     u.seen_deals = old.seen_deals;
-    set_autostart(u.autostart)?;
     accounts::FR.store(u.lang == "fr", std::sync::atomic::Ordering::Relaxed);
     save(&user_path(&st), &u);
+    // the registry is only touched when the choice changes; a failure there loses nothing else
+    if u.autostart != autostart_on() {
+        set_autostart(u.autostart)?;
+    }
     Ok(())
 }
 
@@ -1001,7 +1072,11 @@ fn snapshot(st: &AppState) {
     let p = st.dir.join("history.json");
     let mut h: std::collections::BTreeMap<String, HashMap<String, u64>> = load(&p);
     let today: HashMap<String, u64> = st.lib.lock().unwrap().iter().filter(|g| g.playtime_min > 0).map(|g| (g.id.clone(), g.playtime_min)).collect();
-    h.insert(ymd(now()), today);
+    let day = ymd(now());
+    if h.get(&day) == Some(&today) {
+        return; // nothing new: no write
+    }
+    h.insert(day, today);
     while h.len() > 400 {
         let k = h.keys().next().cloned().unwrap();
         h.remove(&k);
@@ -1061,7 +1136,9 @@ fn screenshots(st: State<AppState>, id: String) -> Vec<String> {
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    if !p.exists() {
+    // only screenshots (images): never a way to run something through explorer
+    let image = p.extension().and_then(|e| e.to_str()).map(|e| ["jpg", "jpeg", "png", "webp", "gif", "bmp"].contains(&e.to_lowercase().as_str())).unwrap_or(false);
+    if !image || !p.is_file() {
         return Err("Fichier introuvable".into());
     }
     std::process::Command::new("explorer").arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -1106,6 +1183,12 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
         return; // automated tests never show anything outside the app
     }
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+fn keep_last<T>(v: &mut Vec<T>, n: usize) {
+    if v.len() > n {
+        v.drain(..v.len() - n);
+    }
 }
 
 async fn watch_deals(app: AppHandle) {
@@ -1157,8 +1240,9 @@ async fn watch_deals(app: AppHandle) {
                     }
                 }
             }
-            u.seen_free.truncate(500);
-            u.seen_deals.truncate(1000);
+            // keep the most recent ones (the oldest are at the front)
+            keep_last(&mut u.seen_free, 500);
+            keep_last(&mut u.seen_deals, 1000);
             let mut cur = user(&st);
             cur.seen_free = u.seen_free;
             cur.seen_deals = u.seen_deals;
@@ -1177,6 +1261,16 @@ pub struct Custom {
     name: String,
     exe: String,
     steam_appid: Option<u32>,
+    /// size and date of the exe when it was added (or last confirmed): run as admin asks again
+    /// if the file changed since
+    fp: Option<String>,
+}
+
+/// Size and modification time of a file: cheap, and enough to notice a replaced exe.
+fn exe_fingerprint(path: &str) -> Option<String> {
+    let m = fs::metadata(path).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(format!("{}:{t}", m.len()))
 }
 
 fn customs(st: &AppState) -> Vec<Custom> {
@@ -1238,7 +1332,8 @@ async fn add_custom(app: AppHandle) -> Result<Option<String>, String> {
     let name = guess_name(&exe);
     let appid = meta::search_steam(&st.http.clone(), &name).await;
     let id = format!("pc:{:x}", exe.to_lowercase().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)));
-    list.push(Custom { id: id.clone(), name, exe, steam_appid: appid });
+    let fp = exe_fingerprint(&exe);
+    list.push(Custom { id: id.clone(), name, exe, steam_appid: appid, fp });
     save(&st.dir.join("custom.json"), &list);
     Ok(Some(id))
 }
@@ -1307,7 +1402,7 @@ fn update_url(st: &AppState) -> Option<String> {
 async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let Some(url) = update_url(&app.state::<AppState>()) else { return Ok(None) };
-    let up = app.updater_builder().endpoints(vec![url.parse().map_err(|e: url::ParseError| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
+    let up = app.updater_builder().endpoints(vec![url.parse::<tauri::Url>().map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
     match up.check().await.map_err(|e| e.to_string())? {
         Some(u) => Ok(Some(UpdateInfo { version: u.version.clone(), current: u.current_version.clone(), notes: u.body.clone() })),
         None => Ok(None),
@@ -1318,7 +1413,7 @@ async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
 async fn install_update(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let url = update_url(&app.state::<AppState>()).ok_or("Aucune source de mise à jour configurée")?;
-    let up = app.updater_builder().endpoints(vec![url.parse().map_err(|e: url::ParseError| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
+    let up = app.updater_builder().endpoints(vec![url.parse::<tauri::Url>().map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
     let u = up.check().await.map_err(|e| e.to_string())?.ok_or("Déjà à jour")?;
     u.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     app.restart();
@@ -1329,7 +1424,6 @@ fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -1341,30 +1435,18 @@ fn show_main(app: &AppHandle) {
 /// After an update, an older Ultimate may still be running in the tray: the new one would then just
 /// focus it and exit. Any Ultimate started before this exe was installed is an old version: close it.
 fn close_stale_instances() {
-    use sysinfo::{ProcessesToUpdate, System};
     if vigie::sandbox().is_some() {
         return; // automated test: never close the user's own Ultimate
     }
     let Ok(me) = std::env::current_exe() else { return };
     let Some(installed) = fs::metadata(&me).and_then(|m| m.modified()).ok() else { return };
-    let mine = std::process::id();
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    let mut killed = false;
-    for (pid, p) in sys.processes() {
-        if pid.as_u32() == mine || !p.name().to_string_lossy().eq_ignore_ascii_case("ultimate.exe") {
-            continue;
-        }
-        let started = std::time::UNIX_EPOCH + std::time::Duration::from_secs(p.start_time());
-        if started < installed {
-            killed |= p.kill();
-        }
-    }
-    if killed {
+    // only this very exe (same full path): never a dev build, a copy elsewhere or another app
+    if win::kill_older(&me, installed) > 0 {
         std::thread::sleep(std::time::Duration::from_millis(600)); // let it release the single-instance lock
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let hidden = std::env::args().any(|a| a == "--hidden");
     close_stale_instances();
@@ -1383,7 +1465,6 @@ pub fn run() {
                     .status(code)
                     .header("Content-Type", m)
                     .header("Cache-Control", "max-age=31536000")
-                    .header("Access-Control-Allow-Origin", "*")
                     .body(b)
                     .unwrap();
                 responder.respond(resp);
@@ -1460,6 +1541,59 @@ mod tests {
         assert_eq!(super::ymd(0), "1970-01-01");
         assert_eq!(super::ymd(1710432249), "2024-03-14");
         assert_eq!(super::ymd(951782400), "2000-02-29");
+    }
+
+    /// Same cases as tests/admin.mjs: Rust and the front decide alike.
+    #[test]
+    fn admin_decision_matches_the_front() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!("../../tests/admin-cases.json")).unwrap();
+        for c in cases {
+            let g = super::Game { id: "x".into(), source: c["source"].as_str().unwrap().into(), launch: c["launch"].as_str().unwrap().into(), ..Default::default() };
+            let mut u = super::User::default();
+            if let Some(o) = c["override"].as_bool() {
+                u.admin_games.insert("x".into(), o);
+            }
+            assert_eq!(super::wants_admin(&u, &g), c["admin"].as_bool().unwrap(), "{c}");
+        }
+    }
+
+    #[test]
+    fn fingerprint_changes_with_the_file() {
+        let f = std::env::temp_dir().join(format!("ultimate-fp-{}.exe", std::process::id()));
+        std::fs::write(&f, b"one").unwrap();
+        let a = super::exe_fingerprint(&f.to_string_lossy()).unwrap();
+        std::fs::write(&f, b"three").unwrap();
+        let b = super::exe_fingerprint(&f.to_string_lossy()).unwrap();
+        assert_ne!(a, b);
+        let _ = std::fs::remove_file(&f);
+        assert!(super::exe_fingerprint(&f.to_string_lossy()).is_none());
+    }
+
+    #[test]
+    fn keeps_the_newest_seen_items() {
+        let mut v: Vec<u32> = (0..600).collect();
+        super::keep_last(&mut v, 500);
+        assert_eq!((v.len(), v[0], v[499]), (500, 100, 599));
+        let mut w = vec![1, 2];
+        super::keep_last(&mut w, 500);
+        assert_eq!(w, vec![1, 2]);
+    }
+
+    #[test]
+    fn game_mode_sessions() {
+        let m = super::GameMode::new();
+        // never seen (240 s timeout): no --apres-jeu
+        assert!(m.start());
+        assert!(!m.end());
+        // two games, the second seen: --avant-jeu once, --apres-jeu after the last one
+        assert!(m.start());
+        assert!(!m.start());
+        m.seen();
+        assert!(!m.end());
+        assert!(m.end());
+        // more ends than starts never underflows nor sends anything
+        assert!(!m.end());
+        assert!(m.start());
     }
 
     #[test]

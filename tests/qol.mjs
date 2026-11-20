@@ -2,7 +2,7 @@
 // (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222, et `--hidden` pour ne rien afficher à
 // l'écran : le test pilote la page par DevTools, sans souris ni clavier système).
 // Prérequis : appli lancée avec ULTIMATE_TEST_SANDBOX=<dossier> (sinon le test s'arrête) et, sur un profil de test, un jeu ajouté « Zork Fakegame QA » (petit exe qui dort, dans le bac à sable,
-// admin désactivé) et `vigiePath` vers un faux Vigie qui journalise ses appels dans calls.log :
+// admin désactivé) et `vigiePath` vers le faux Vigie.exe (tests/fakes, construit par qa-start.sh) qui journalise ses appels dans calls.log :
 // node tests/qol.mjs <dossier captures> <calls.log>
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
@@ -14,6 +14,7 @@ const browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222', d
 const page = (await browser.pages()).find((p) => !p.url().startsWith('devtools'));
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
+page.on('console', (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) errors.push(`CSP : ${m.text().slice(0, 200)}`); });
 let fails = 0;
 async function check(name, fn) {
   try { const d = await fn(); console.log(`✔ ${name}${d ? ' — ' + d : ''}`); }
@@ -167,7 +168,7 @@ await check('réglages conseillés : appliquer puis restaurer (copie, jamais le 
   const label = await page.$eval('[data-act="tune-apply"]', (e) => e.textContent);
   await page.$eval('[data-act="tune-apply"]', (e) => e.click());
   await page.waitForSelector('[data-act="tune-restore"]', { timeout: 5000 });
-  const baks = fs.readdirSync(dir).filter((f) => f.startsWith('UserSettings.json.ultimate-'));
+  const baks = fs.readdirSync(dir).filter((f) => f === 'UserSettings.json.avant-ultimate.bak');
   assert(baks.length === 1 && hash(path.join(dir, baks[0])) === orig, `sauvegarde : ${baks}`);
   assert(hash(copy) !== orig, 'copie inchangée');
   const toastTxt = await page.$eval('#toast', (e) => e.textContent);

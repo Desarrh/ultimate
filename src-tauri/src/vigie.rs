@@ -2,6 +2,7 @@
 //! if Vigie is missing, too old, slow or crashing, every call here just returns None.
 
 use std::io::Read;
+use std::sync::mpsc;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,6 +21,10 @@ pub struct Caps {
     pub game_mode: bool,
     pub dev_state: bool,
     pub dev_kill: bool,
+    pub game_memory: bool,
+    /// the exe carries the VigieCli marker (required for a path typed in the settings)
+    #[serde(skip)]
+    pub marked: bool,
 }
 
 static CAPS: Mutex<Option<(PathBuf, SystemTime, Caps)>> = Mutex::new(None);
@@ -38,12 +43,18 @@ pub fn allowed(p: &Path) -> bool {
     }
 }
 
-/// Configured path first (file or folder), then the dev build, then next to Ultimate.
+/// Configured path first (file or folder), then the dev build, then next to Ultimate. A typed path
+/// is only used if it is a `Vigie.exe` carrying the VigieCli marker: the settings must not become
+/// a way to start any program.
 pub fn find(configured: Option<&str>) -> Option<PathBuf> {
     let mut c: Vec<PathBuf> = vec![];
     if let Some(p) = configured.map(str::trim).filter(|p| !p.is_empty()) {
         let p = PathBuf::from(p);
-        c.push(if p.is_dir() { p.join("Vigie.exe") } else { p });
+        let p = if p.is_dir() { p.join("Vigie.exe") } else { p };
+        let named = p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case("vigie.exe")).unwrap_or(false);
+        if named && p.is_file() && caps(&p).marked {
+            c.push(p);
+        }
     }
     c.push(PathBuf::from(r"C:\Dev\vigie\dist\Vigie.exe"));
     if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
@@ -75,6 +86,8 @@ pub fn caps(exe: &Path) -> Caps {
         game_mode: true,
         dev_state: declares(&b, "etat-dev"),
         dev_kill: declares(&b, "couper-dev"),
+        game_memory: declares(&b, "memoire-jeu"),
+        marked: contains(&b, &"VigieCli".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()) || contains(&b, b"VigieCli:"),
     }).unwrap_or_default();
     *cache = Some((exe.to_path_buf(), mtime, c));
     c
@@ -92,19 +105,28 @@ pub fn run(exe: &Path, args: &[&str], timeout: Duration) -> Option<String> {
         .spawn()
         .ok()?;
     let mut out = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    // the output comes through a channel: a program Vigie starts (wsl --shutdown…) may keep the pipe
+    // open after Vigie exits, and a join() would then wait forever
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut s = String::new();
         let _ = out.read_to_string(&mut s);
-        s
+        let _ = tx.send(s);
     });
     let t0 = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let s = reader.join().ok()?;
+                let s = rx.recv_timeout(Duration::from_millis(300)).ok()?;
                 return status.success().then(|| s.trim().to_string());
             }
-            Ok(None) if t0.elapsed() < timeout => std::thread::sleep(Duration::from_millis(15)),
+            Ok(None) if t0.elapsed() < timeout => {
+                // usually done well before: take the output as soon as it is complete
+                if let Ok(s) = rx.recv_timeout(Duration::from_millis(50)) {
+                    let status = child.wait().ok()?;
+                    return status.success().then(|| s.trim().to_string());
+                }
+            }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -139,7 +161,11 @@ mod tests {
     fn missing_vigie_is_quiet() {
         assert!(run(Path::new(r"C:\nope\Vigie.exe"), &["--etat-dev"], Duration::from_millis(200)).is_none());
         let c = caps(Path::new(r"C:\nope\Vigie.exe"));
-        assert!(!c.game_mode && !c.dev_state && !c.dev_kill);
+        assert!(!c.game_mode && !c.dev_state && !c.dev_kill && !c.marked);
+        // a typed path to anything else than a marked Vigie.exe is ignored
+        let me = std::env::current_exe().unwrap();
+        assert_ne!(find(Some(&me.to_string_lossy())).as_deref(), Some(me.as_path()));
+        assert_ne!(find(Some(r"C:\Windows\System32\cmd.exe")).as_deref(), Some(Path::new(r"C:\Windows\System32\cmd.exe")));
     }
 
     #[test]

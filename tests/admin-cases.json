@@ -1,0 +1,15 @@
+[
+  { "source": "pc", "launch": "D:\\Games\\X\\x.exe", "override": null, "admin": true },
+  { "source": "pc", "launch": "D:\\Games\\X\\X.EXE", "override": null, "admin": true },
+  { "source": "pc", "launch": "D:\\Games\\X\\x.exe", "override": false, "admin": false },
+  { "source": "pc", "launch": "C:\\Users\\a\\Desktop\\x.lnk", "override": null, "admin": false },
+  { "source": "pc", "launch": "C:\\Users\\a\\Desktop\\x.lnk", "override": true, "admin": true },
+  { "source": "pc", "launch": "D:\\Games\\X\\start.bat", "override": true, "admin": true },
+  { "source": "pc", "launch": "D:\\Games\\X\\start.bat", "override": null, "admin": false },
+  { "source": "pc", "launch": "C:\\Users\\a\\Desktop\\x.url", "override": true, "admin": false },
+  { "source": "gog", "launch": "C:\\GOG Games\\Y\\y.exe", "override": null, "admin": false },
+  { "source": "gog", "launch": "C:\\GOG Games\\Y\\y.exe", "override": true, "admin": true },
+  { "source": "steam", "launch": "steam://rungameid/1091500", "override": true, "admin": false },
+  { "source": "epic", "launch": "com.epicgames.launcher://apps/a%3Ab%3Ac?action=launch", "override": true, "admin": false },
+  { "source": "pc", "launch": "steam://rungameid/1.exe", "override": true, "admin": false }
+]

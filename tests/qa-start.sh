@@ -10,6 +10,11 @@ SANDBOX="$1"
 cd "$(dirname "$0")/.."
 CONF='{"identifier":"dev.local.launcher.qa","app":{"windows":[{"label":"main","title":"Ultimate QA","width":1440,"height":900,"minWidth":960,"minHeight":620,"backgroundColor":"#0A0A0C","visible":false,"focus":false}]}}'
 (cd src-tauri && TAURI_CONFIG="$CONF" cmd //c "start /belownormal /b /wait cargo build" )
+# fakes inside the sandbox: a game that only sleeps, a Vigie that logs its calls (tests/fakes)
+mkdir -p "$SANDBOX/fakegame" "$SANDBOX/fakevigie"
+[ -f "$SANDBOX/fakegame/Game.exe" ] || rustc -O tests/fakes/game.rs -o "$SANDBOX/fakegame/Game.exe"
+[ -f "$SANDBOX/fakevigie/Vigie.exe" ] || rustc -O tests/fakes/vigie.rs -o "$SANDBOX/fakevigie/Vigie.exe"
+rm -f "$SANDBOX"/fakegame/*.pdb "$SANDBOX"/fakevigie/*.pdb
 touch -d 2020-01-01 src-tauri/target/debug/ultimate.exe # belt and braces: older than any running Ultimate
 (nohup npx vite --port 1420 --strictPort < /dev/null > "${TEMP:-/tmp}/vite-qa.log" 2>&1 &)
 sleep 3

@@ -123,28 +123,14 @@ pub fn to_game_json(doc: &Value) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Local time stamp for backup names: 2026-11-20_18-15-30.
-fn stamp() -> String {
-    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
-    let t = unsafe {
-        let mut t = std::mem::zeroed();
-        GetLocalTime(&mut t);
-        t
-    };
-    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
-}
+/// The config as it was before Ultimate ever wrote it: created on the first « Appliquer »,
+/// never overwritten, so « Restaurer » always goes back to the user's own settings.
+const ORIGINAL: &str = "UserSettings.json.avant-ultimate.bak";
 
-const BAK_PREFIX: &str = "UserSettings.json.ultimate-";
-
-/// Ultimate's own backups next to the file, newest first (never the user's other `.bak` files).
+/// Ultimate's backup next to the file, if any (never the user's other `.bak` files).
 pub fn backups(file: &Path) -> Vec<PathBuf> {
-    let Some(dir) = file.parent() else { return vec![] };
-    let mut l: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
-        .filter(|p| p.file_name().map(|n| { let n = n.to_string_lossy(); n.starts_with(BAK_PREFIX) && n.ends_with(".bak") }).unwrap_or(false))
-        .collect();
-    l.sort();
-    l.reverse();
-    l
+    let p = file.with_file_name(ORIGINAL);
+    if p.is_file() { vec![p] } else { vec![] }
 }
 
 fn write_atomic(file: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -153,28 +139,33 @@ fn write_atomic(file: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::rename(&tmp, file).map_err(|e| { let _ = fs::remove_file(&tmp); e.to_string() })
 }
 
-/// Backup, then write. The backup is the exact original bytes.
+/// Backup (first time only), then write. The backup is the exact original bytes.
 pub fn apply_file(file: &Path, values: &HashMap<String, Value>) -> Result<Applied, String> {
+    use std::io::Write;
     let orig = fs::read(file).map_err(|e| e.to_string())?;
     let mut doc: Value = serde_json::from_slice(&orig).map_err(|e| e.to_string())?;
     let mut res = cp2077_apply(&mut doc, values);
     if res.changed.is_empty() {
         return Ok(res);
     }
-    let bak = file.with_file_name(format!("{BAK_PREFIX}{}.bak", stamp()));
-    fs::write(&bak, &orig).map_err(|e| e.to_string())?;
+    let bak = file.with_file_name(ORIGINAL);
+    match fs::OpenOptions::new().write(true).create_new(true).open(&bak) {
+        Ok(mut f) => f.write_all(&orig).and_then(|_| f.sync_all()).map_err(|e| { let _ = fs::remove_file(&bak); e.to_string() })?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {} // keep the very first one
+        Err(e) => return Err(e.to_string()),
+    }
     write_atomic(file, &to_game_json(&doc)?)?;
-    res.backup = bak.file_name().map(|n| n.to_string_lossy().to_string());
+    res.backup = Some(ORIGINAL.to_string());
     Ok(res)
 }
 
-/// Puts the newest Ultimate backup back (kept on disk, so it can be restored again).
+/// Puts the config from before Ultimate back (the backup stays, it can be restored again).
 pub fn restore_file(file: &Path) -> Result<String, String> {
     let bak = backups(file).into_iter().next().ok_or("Aucune sauvegarde d'Ultimate")?;
     let bytes = fs::read(&bak).map_err(|e| e.to_string())?;
     serde_json::from_slice::<Value>(&bytes).map_err(|e| format!("Sauvegarde illisible : {e}"))?;
     write_atomic(file, &bytes)?;
-    Ok(bak.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    Ok(ORIGINAL.to_string())
 }
 
 /// Is Cyberpunk running? Applying then would be undone: the game rewrites the file when it quits.
@@ -258,14 +249,22 @@ mod tests {
         let orig = to_game_json(&doc()).unwrap();
         fs::write(&file, &orig).unwrap();
         fs::write(dir.join("UserSettings.json.avant-optimisation.bak"), b"user's own").unwrap();
-        let v: HashMap<String, Value> = serde_json::from_value(json!({"TextureQuality": "High"})).unwrap();
-        let r = apply_file(&file, &v).unwrap();
+        let hi: HashMap<String, Value> = serde_json::from_value(json!({"TextureQuality": "High"})).unwrap();
+        let med: HashMap<String, Value> = serde_json::from_value(json!({"TextureQuality": "Medium", "Anisotropy": 16})).unwrap();
+        let r = apply_file(&file, &hi).unwrap();
         assert_eq!(r.changed, vec!["TextureQuality"]);
         assert_eq!(backups(&file).len(), 1);
         assert_eq!(fs::read(dir.join(r.backup.unwrap())).unwrap(), orig);
         assert_eq!(cp2077_flat(&serde_json::from_slice(&fs::read(&file).unwrap()).unwrap())["TextureQuality"], "High");
-        // nothing to change: no new backup
-        assert!(apply_file(&file, &v).unwrap().backup.is_none());
+        // nothing to change: nothing written
+        assert!(apply_file(&file, &hi).unwrap().backup.is_none());
+        // a second, different apply in the same second keeps the very first backup
+        apply_file(&file, &med).unwrap();
+        assert_eq!(backups(&file).len(), 1);
+        assert_eq!(fs::read(&backups(&file)[0]).unwrap(), orig);
+        // restore always goes back to before Ultimate, and can be done twice
+        restore_file(&file).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), orig);
         restore_file(&file).unwrap();
         assert_eq!(fs::read(&file).unwrap(), orig);
         assert_eq!(fs::read(dir.join("UserSettings.json.avant-optimisation.bak")).unwrap(), b"user's own");

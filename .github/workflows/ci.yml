@@ -29,7 +29,7 @@ jobs:
         run: npm run build
 
       - name: JS tests
-        run: node tests/fuzzy.mjs && node tests/tuning.mjs
+        run: node tests/fuzzy.mjs && node tests/tuning.mjs && node tests/admin.mjs
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

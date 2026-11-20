@@ -1,8 +1,15 @@
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-700.css';
+import '@fontsource/bricolage-grotesque/latin-600.css';
+import '@fontsource/bricolage-grotesque/latin-800.css';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LANG, LOCALE, T, dec, setLang, startI18n } from './i18n.js';
 import { completion, norm, prep, query, score } from './fuzzy.js';
+import { canAdmin, isAdmin as adminFor } from './admin.js';
 import { SLIDER, cpuShort, recommend, sheetFor } from './tuning.js';
 const PS = LANG === 'en' ? '' : ' '; // space before % in French only
 
@@ -118,8 +125,7 @@ const ranked = (list, q) => {
 };
 
 // ---------- run as admin (mirror of wants_admin in lib.rs) ----------
-const canAdmin = (g) => (g.source === 'pc' || g.source === 'gog') && !g.launch.includes('://') && /\.(exe|lnk|bat)$/i.test(g.launch);
-const isAdmin = (g) => canAdmin(g) && (S.user.adminGames?.[g.id] ?? (g.source === 'pc' && /\.exe$/i.test(g.launch)));
+const isAdmin = (g) => adminFor(g, S.user.adminGames);
 
 // ---------- Vigie (optional): game mode and dev guard ----------
 const VIG = { found: false, path: null, caps: {} };
@@ -212,7 +218,7 @@ function cover(g) {
   return `<button class="cov${g.installed ? '' : ' notinst'}" data-act="sel" data-id="${esc(g.id)}" aria-label="${esc(g.name)}" style="--g:${g.accent || '#000'}">
     <span class="art" style="background:${g.deep || '#1A1A20'}">
       <span class="ph">${esc(g.name)}</span>
-      ${g.cover ? `<img src="${esc(coverSrc(g))}" alt="" onerror="this.remove()">` : ''}
+      ${g.cover ? `<img src="${esc(coverSrc(g))}" alt="" data-err="remove">` : ''}
       <span class="badges">${g.update ? `<span class="srcb upd">${icon.upd}MAJ</span>` : ''}${g.source !== 'steam' ? `<span class="srcb">${SRC[g.source].toUpperCase()}</span>` : ''}</span>
       ${memo || isFav(g) ? `<span class="memob">${isFav(g) ? `<span style="color:#FFD45C">${icon.star(true)}</span>` : icon.pen}</span>` : ''}
       ${p !== null ? `<span class="pb"><span style="width:${p}%;background:${p === 100 ? '#6EE7A8' : g.accent || '#fff'}"></span></span>` : ''}
@@ -231,14 +237,14 @@ function listRow(g) {
   const icons = (S.ach[g.id]?.list || []).filter((x) => x.unlocked).sort((x, y) => (y.unlockTime || 0) - (x.unlockTime || 0));
   const r = rating(g.id);
   return `<button class="lrow${g.installed ? '' : ' notinst'}" data-act="sel" data-id="${esc(g.id)}" style="--g:${g.accent || '#5B9DFF'}">
-    <span class="limg" style="background:${g.deep || '#1A1A20'}">${g.hero || g.cover ? `<img src="${esc(th(g.hero || g.cover, 600))}" alt="" onerror="this.remove()">` : ''}</span>
+    <span class="limg" style="background:${g.deep || '#1A1A20'}">${g.hero || g.cover ? `<img src="${esc(th(g.hero || g.cover, 600))}" alt="" data-err="remove">` : ''}</span>
     <span class="linfo">
       <span class="ltitle"><b class="nm">${esc(g.name)}</b>${p === 100 ? `<span class="lcrown" title="100%">${icon.crown}</span>` : ''}${r?.stars ? `<span class="rt">${starTxt(r.stars)}</span>` : ''}${g.source !== 'steam' ? `<span class="srcb">${SRC[g.source].toUpperCase()}</span>` : ''}</span>
       <span class="lstats"><span><span class="k">TEMPS DE JEU</span> ${fmtH(g.playtimeMin)}</span><span><span class="k">DERNIÈRE SESSION</span> ${esc(ago(g.lastPlayed))}</span></span>
       ${a ? `<span class="lach"><span class="k">SUCCÈS</span><span class="ln">${a[0]}/${a[1]}</span></span>
         <span class="lbar"><span style="width:${p}%;background:${p === 100 ? '#F5C84C' : 'var(--g)'}"></span></span>` : '<span class="lach muted">—</span>'}
     </span>
-    <span class="licons" data-ic="${esc(g.id)}">${icons.slice(0, 5).map((x) => `<img src="${esc(th(x.icon, 80))}" alt="" title="${esc(x.name)}" onerror="this.remove()">`).join('')}${icons.length > 5 ? `<span class="lmore">+${icons.length - 5}</span>` : ''}</span>
+    <span class="licons" data-ic="${esc(g.id)}">${icons.slice(0, 5).map((x) => `<img src="${esc(th(x.icon, 80))}" alt="" title="${esc(x.name)}" data-err="remove">`).join('')}${icons.length > 5 ? `<span class="lmore">+${icons.length - 5}</span>` : ''}</span>
   </button>`;
 }
 // fetch the unlocked-achievement icons of rows on screen, a few at a time
@@ -489,7 +495,7 @@ function paintHome() {
       ${last.hero || last.cover ? `<img class="h" src="${esc(th(last.hero || last.cover, Math.min(bgW(), 2560)))}" alt="">` : ''}
       <span class="fade"></span>
       <span class="in">
-        ${last.logo ? `<img class="lg" src="${esc(th(last.logo, 640))}" alt="${esc(last.name)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'nm',textContent:${esc(JSON.stringify(last.name))}}))">` : `<span class="nm">${esc(last.name)}</span>`}
+        ${last.logo ? `<img class="lg" src="${esc(th(last.logo, 640))}" alt="${esc(last.name)}" data-err="nm" data-name="${esc(last.name)}">` : `<span class="nm">${esc(last.name)}</span>`}
         <span class="meta">
           <span class="k"><span class="dot" style="background:${last.accent};box-shadow:0 0 12px ${last.accent}"></span>${esc(ago(last.lastPlayed).toUpperCase())}</span>
           <span>${fmtH(last.playtimeMin)} ${pct(last.id) !== null ? ` · ${pct(last.id)}${PS}%` : ''}</span>
@@ -620,7 +626,7 @@ function achPanel(g) {
       <div class="fseg glass" role="group" aria-label="Filtrer">${F.map(([k, x]) => `<button data-act="achf" data-v="${k}" aria-pressed="${S.achF === k}">${x}</button>`).join('')}</div>
     </div>${note}
     <div class="achs">${l.slice(0, S.achShow).map((x) => `<div class="ach${x.unlocked ? ' on' : ''}">
-        ${x.icon ? `<img src="${esc(th(x.icon, 104))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
+        ${x.icon ? `<img src="${esc(th(x.icon, 104))}" alt="" loading="lazy" data-err="hide">` : '<span style="width:52px;height:52px;border-radius:12px;background:#222;flex:none"></span>'}
         <span class="t"><b>${esc(x.name)}</b><span>${esc(x.desc)}</span></span>
         <span class="r">${x.rarity != null ? (x.rarity < 10 ? `<span class="rare">${dec(x.rarity)}${PS}%</span>` : `${Math.round(x.rarity)}${PS}%`) : ''}<span>${x.unlocked ? (x.unlockTime ? day(x.unlockTime) : 'Débloqué') : 'Verrouillé'}</span></span>
       </div>`).join('') || '<div class="empty">Rien dans ce filtre.</div>'}</div>
@@ -729,11 +735,10 @@ function tunePanel(g) {
   const known = TUNE_CUR[g.id];
   const changes = known ? r.rows.filter((x) => x.current !== undefined && String(x.current) !== String(x.rec)).length : 0;
   TUNE_LAST[g.id] = r;
-  const bakDate = (n) => { const m = /(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)/.exec(n || ''); return m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]}` : ''; };
   const actions = known ? `<div class="row2 tn-act" data-notr>
       <button class="btn2 pri" data-act="tune-apply"${changes ? '' : ' disabled'}>${esc(changes ? T(`Appliquer les ${changes} changement(s)`, `Apply ${changes} change(s)`) : T('Déjà à jour', 'Already applied'))}</button>
-      ${known.backup ? `<button class="btn2" data-act="tune-restore" title="${esc(known.backup)}">${esc(T(`Restaurer la sauvegarde du ${bakDate(known.backup)}`, `Restore the ${bakDate(known.backup)} backup`))}</button>` : ''}
-      <span class="muted" style="font-size:12px">${esc(T('Sauvegarde automatique avant chaque écriture, à côté du fichier du jeu. Jeu fermé obligatoire.', 'Automatic backup before every write, next to the game\'s file. The game must be closed.'))}</span>
+      ${known.backup ? `<button class="btn2" data-act="tune-restore" title="${esc(known.backup)}">${esc(T('Remettre ma config d\'avant Ultimate', 'Restore my settings from before Ultimate'))}</button>` : ''}
+      <span class="muted" style="font-size:12px">${esc(T('Ta config d\'origine est sauvegardée à côté du fichier du jeu au premier essai. Jeu fermé obligatoire.', 'Your original settings are saved next to the game\'s file the first time. The game must be closed.'))}</span>
     </div>` : '';
   const src = Object.fromEntries(sh.sources.map((x) => [x.id, x]));
   return `<div class="tn">${head}
@@ -799,7 +804,7 @@ function paintGame() {
   const tabs = [['ach', `${T('Succès', 'Achievements')}${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus'], ['shots', 'Captures'], ['tune', T('Réglages', 'Settings')], ['review', 'Mon avis'], ['memo', 'Mémo']];
   const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, tune: tunePanel, review: reviewPanel, memo: memoPanel }[S.tab](g);
   const title = g.logo
-    ? `<img class="logo" src="${esc(th(g.logo, 900))}" alt="${esc(g.name)}" onerror="this.replaceWith(Object.assign(document.createElement('h1'),{className:'title',textContent:${esc(JSON.stringify(g.name))}}))">`
+    ? `<img class="logo" src="${esc(th(g.logo, 900))}" alt="${esc(g.name)}" data-err="title" data-name="${esc(g.name)}">`
     : `<h1 class="title">${esc(g.name)}</h1>`;
   $('#game').innerHTML = `
     <section class="ghero">
@@ -1000,9 +1005,24 @@ function renderFriends() {
   </div>`;
 }
 
+/** Yes / no question inside Ultimate (no system dialog). */
+function askConfirm(text, ok) {
+  return new Promise((done) => { S.confirm = { text, ok, done }; S.modal = 'confirm'; renderModal(); setTimeout(() => $('[data-act="confirm-no"]')?.focus(), 30); });
+}
+function closeConfirm(yes) {
+  const c = S.confirm; S.confirm = null; S.modal = null; renderModal(); c?.done(yes);
+}
+
 function renderModal() {
   const m = $('#modal');
   if (!S.modal) { m.innerHTML = ''; return; }
+  if (S.modal === 'confirm' && S.confirm) {
+    m.innerHTML = `<div class="overlay" data-act="confirm-no"><div class="dialog solid" role="alertdialog" aria-modal="true" data-notr style="width:min(480px,100%)">
+      <h2 style="margin:0;font-size:20px">${icon.shield} ${esc(S.confirm.text)}</h2>
+      <div class="row2" style="justify-content:flex-end"><button class="btn2" data-act="confirm-no">${esc(T('Annuler', 'Cancel'))}</button><button class="btn2 pri" data-act="confirm-yes">${esc(S.confirm.ok)}</button></div>
+    </div></div>`;
+    return;
+  }
   if (S.modal === 'editgame' && S.edit) {
     const e = S.edit;
     m.innerHTML = `<div class="overlay" data-act="close-modal"><div class="dialog solid" role="dialog" aria-modal="true" aria-label="Modifier le jeu">
@@ -1169,7 +1189,15 @@ async function launch(g, el) {
     if (devWorth(st) && await devPrompt(st)) { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); }
   }
   try { await invoke('launch', { id: g.id }); toast(g.installed ? `${g.name}…` : 'Installation…'); }
-  catch (err) { toast(String(err) === 'uac-refused' ? T('Lancement annulé : droits admin refusés', 'Launch cancelled: admin rights refused') : String(err)); }
+  catch (err) {
+    if (String(err) === 'exe-changed') {
+      // the exe was replaced since it was added: never elevate it silently
+      if (!(await askConfirm(T(`L'exe de ${g.name} a changé depuis son ajout. Le lancer en admin ?`, `${g.name}'s exe changed since it was added. Run it as admin?`), T('Lancer en admin', 'Run as admin')))) return;
+      try { await invoke('launch', { id: g.id, confirm: true }); toast(`${g.name}…`); } catch (e2) { toast(String(e2) === 'uac-refused' ? T('Lancement annulé : droits admin refusés', 'Launch cancelled: admin rights refused') : String(e2)); }
+      return;
+    }
+    toast(String(err) === 'uac-refused' ? T('Lancement annulé : droits admin refusés', 'Launch cancelled: admin rights refused') : String(err));
+  }
 }
 
 async function loadAccounts() { try { S.acc = await invoke('accounts_status'); } catch { /* ignore */ } }
@@ -1206,6 +1234,8 @@ document.addEventListener('click', async (e) => {
       renderMenus(); return;
     case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
     case 'tune-fps': setTune(g, { target: +v }); return;
+    case 'confirm-yes': closeConfirm(true); return;
+    case 'confirm-no': if (e.target.closest('.dialog') && el.classList.contains('overlay')) return; closeConfirm(false); return;
     case 'tune-apply': tuneWrite(g, false); return;
     case 'tune-restore': tuneWrite(g, true); return;
     case 'tab': S.tab = v; S.menu = null; if (v === 'shots') ensureShots(g); if (v === 'tune') ensureTune(g); renderGame(); $('#panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1410,6 +1440,7 @@ document.addEventListener('keydown', (e) => {
 });
 function back() {
   if (devPrompt.end) devPrompt.end(false);
+  else if (S.modal === 'confirm') closeConfirm(false);
   else if (S.modal) { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); }
   else if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
   else if (S.view !== 'home') goHome();
@@ -1590,6 +1621,16 @@ function pollPad() {
 }
 addEventListener('gamepadconnected', () => { toast('Manette détectée'); });
 requestAnimationFrame(pollPad);
+
+// Broken images (CSP forbids inline onerror handlers): what to do is in data-err.
+document.addEventListener('error', (e) => {
+  const el = e.target;
+  const how = el?.dataset?.err;
+  if (!how) return;
+  if (how === 'remove') el.remove();
+  else if (how === 'hide') el.style.visibility = 'hidden';
+  else if (how === 'title' || how === 'nm') el.replaceWith(Object.assign(document.createElement(how === 'title' ? 'h1' : 'span'), { className: how, textContent: el.dataset.name || '' }));
+}, true);
 
 // ---------- boot ----------
 
