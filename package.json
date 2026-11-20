@@ -1,7 +1,7 @@
 {
   "name": "ultimate",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Ultimate: one fast, beautiful library for all your PC games (Steam, Epic, GOG, .exe).",
   "license": "GPL-3.0-or-later",
   "author": "Desarrh",

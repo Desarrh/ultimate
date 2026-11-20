@@ -1129,8 +1129,33 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// After an update, an older Ultimate may still be running in the tray: the new one would then just
+/// focus it and exit. Any Ultimate started before this exe was installed is an old version: close it.
+fn close_stale_instances() {
+    use sysinfo::{ProcessesToUpdate, System};
+    let Ok(me) = std::env::current_exe() else { return };
+    let Some(installed) = fs::metadata(&me).and_then(|m| m.modified()).ok() else { return };
+    let mine = std::process::id();
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let mut killed = false;
+    for (pid, p) in sys.processes() {
+        if pid.as_u32() == mine || !p.name().to_string_lossy().eq_ignore_ascii_case("ultimate.exe") {
+            continue;
+        }
+        let started = std::time::UNIX_EPOCH + std::time::Duration::from_secs(p.start_time());
+        if started < installed {
+            killed |= p.kill();
+        }
+    }
+    if killed {
+        std::thread::sleep(std::time::Duration::from_millis(600)); // let it release the single-instance lock
+    }
+}
+
 pub fn run() {
     let hidden = std::env::args().any(|a| a == "--hidden");
+    close_stale_instances();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_notification::init())
