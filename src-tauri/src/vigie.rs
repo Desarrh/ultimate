@@ -45,9 +45,9 @@ pub fn allowed(p: &Path) -> bool {
     }
 }
 
-/// Configured path first (file or folder), then the dev build, then next to Ultimate. A typed path
-/// is only used if it is a `Vigie.exe` carrying the VigieCli marker: the settings must not become
-/// a way to start any program.
+/// Configured path first (file or folder), then the dev build, then next to Ultimate. Only a file
+/// named `Vigie.exe` carrying the VigieCli marker is used: the settings must not become a way to
+/// start any program.
 pub fn find(configured: Option<&str>) -> Option<PathBuf> {
     let mut c: Vec<PathBuf> = vec![];
     if let Some(p) = configured.map(str::trim).filter(|p| !p.is_empty()) {
@@ -62,7 +62,9 @@ pub fn find(configured: Option<&str>) -> Option<PathBuf> {
     if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         c.push(d.join("Vigie.exe"));
     }
-    c.into_iter().find(|p| p.is_file() && allowed(p))
+    // whatever its place (C:\Dev is writable by any local account), only a Vigie.exe carrying
+    // the VigieCli marker is ever run
+    c.into_iter().find(|p| p.is_file() && allowed(p) && caps(p).marked)
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {

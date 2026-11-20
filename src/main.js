@@ -153,7 +153,7 @@ function paintMem(g) {
   const el = $('#memhint');
   if (!el) return;
   const v = MEM[g.id]?.v;
-  el.innerHTML = v ? `${esc(T(`Il te manque ${mo(v.manque_mo)} pour ce jeu`, `${mo(v.manque_mo)} of RAM missing for this game`))}${VIG.caps.devKill ? ` · <button class="alink" data-act="dev-kill" style="min-height:0">${esc(T('Tout couper', 'Stop dev servers'))}</button>` : ''}` : '';
+  el.innerHTML = v ? `${esc(T(`Il te manque ${mo(v.manque_mo)} pour ce jeu`, `${mo(v.manque_mo)} of RAM missing for this game`))}${VIG.caps.devKill && devWorth(DEV.v) ? ` · <button class="alink" data-act="dev-kill" style="min-height:0">${esc(T('Tout couper', 'Stop dev servers'))}</button>` : ''}` : '';
   el.hidden = !v;
 }
 
@@ -788,7 +788,7 @@ async function tuneWrite(g, restore) {
       toast(`${T(`${res.changed.length} réglage(s) appliqué(s)`, `${res.changed.length} setting(s) applied`)}${skipped.length ? T(` · à régler dans le jeu : ${skipped.map(label).join(', ')}`, ` · set in game: ${skipped.map(label).join(', ')}`) : ''}`, 7000);
     }
   } catch (err) {
-    toast(String(err) === 'game-running' ? T(`Ferme ${g.name} d'abord : il réécrit ses réglages en quittant`, `Close ${g.name} first: it rewrites its settings when it quits`) : String(err), 6000);
+    toast(String(err) === 'format-inconnu' ? T('Format du fichier de réglages inconnu (nouvelle version du jeu ?) : rien n\'a été écrit', 'Unknown settings file layout (new game version?): nothing was written') : String(err) === 'game-running' ? T(`Ferme ${g.name} d'abord : il réécrit ses réglages en quittant`, `Close ${g.name} first: it rewrites its settings when it quits`) : String(err), 6000);
   }
   delete TUNE_CUR[g.id];
   ensureTune(g);
@@ -1458,6 +1458,7 @@ document.addEventListener('keydown', (e) => {
   if (ctrl && k === 'k') { e.preventDefault(); togglePalette(); return; }
   if (S.pal) { if (e.key === 'Escape') closePalette(); return; } // the palette handles its own keys
   if (ctrl && k === 'f') { e.preventDefault(); focusSearch(); }
+  if (e.key === 'F1') { e.preventDefault(); openPalette(); } // every command with its shortcut (DIRECTION §4)
   if (ctrl && e.key === ',') { e.preventDefault(); act('settings'); }
   if (e.key === 'F5') { e.preventDefault(); refresh(); }
   if (e.key === 'Escape') back();
@@ -1521,6 +1522,7 @@ function commands() {
     { t: `${T('Mode manette', 'Controller mode')} : ${onoff(P.big)}`, run: () => setBig(!P.big) },
   ];
   if (VIG.caps.gameMode) L.push({ t: `${T('Mode jeu Vigie', 'Vigie game mode')} : ${onoff(S.user.gameMode)}`, run: () => { S.user.gameMode = !S.user.gameMode; saveUser(); toast(`Vigie : ${onoff(S.user.gameMode)}`); } });
+  if (VIG.caps.gameMode) L.push({ t: T('Rendre le mode jeu maintenant (Vigie --apres-jeu)', 'End game mode now (Vigie --apres-jeu)'), run: () => { invoke('game_mode_end').catch(() => {}); toast(T('Fin du mode jeu…', 'Ending game mode…')); } });
   if (VIG.caps.devState) L.push({ t: `${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`, run: () => { S.user.devGuard = !S.user.devGuard; saveUser(); toast(`${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`); } });
   if (VIG.caps.devKill) L.push({ t: T('Couper les serveurs de dev, Docker et WSL', 'Stop dev servers, Docker and WSL'), run: () => { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); } });
   if (g) {
@@ -1693,6 +1695,8 @@ function onLibrary(list) {
   invoke('free_games').then((f) => { S.free = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => {});
   invoke('steam_free_games').then((f) => { S.steamFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.steamFree = []; });
   invoke('app_version').then((v) => { S.version = v; }).catch(() => {});
-  invoke('check_update').then((u) => { S.update = u; renderUpdPill(); if (u) toast(`Ultimate ${u.version} ✓`); }).catch(() => {});
+  const checkUpdate = () => invoke('check_update').then((u) => { const isNew = u && u.version !== S.update?.version; S.update = u; renderUpdPill(); if (isNew) toast(`Ultimate ${u.version} ✓`); }).catch(() => {});
+  checkUpdate();
+  setInterval(checkUpdate, 24 * 3600 * 1000); // Ultimate can stay days in the tray (DIRECTION §4: once per 24 h)
   invoke('gog_free_games').then((f) => { S.gogFree = f; renderFree(); if (S.view === 'home') renderHome(); }).catch(() => { S.gogFree = []; });
 })();

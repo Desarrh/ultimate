@@ -60,16 +60,30 @@ pub struct AppState {
     achsum: Mutex<HashMap<String, [usize; 2]>>,
 }
 
+/// Reads a JSON data file. An unreadable one (corrupted, or a field whose type changed) is put
+/// aside as `<name>.illisible-<time>` before falling back to the default: the next save would
+/// otherwise erase the user's data (collections, measured time, notes) for good.
 fn load<T: DeserializeOwned + Default>(p: &PathBuf) -> T {
-    fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let Ok(b) = fs::read(p) else { return T::default() };
+    match serde_json::from_slice(&b) {
+        Ok(v) => v,
+        Err(_) if b.iter().any(|c| !c.is_ascii_whitespace()) => {
+            let aside = p.with_extension(format!("illisible-{}", now()));
+            let _ = fs::rename(p, aside);
+            T::default()
+        }
+        Err(_) => T::default(),
+    }
 }
 
+/// Atomic write: temporary file flushed to disk, then renamed over the old one.
 fn save<T: Serialize>(p: &PathBuf, v: &T) {
-    if let Ok(b) = serde_json::to_vec(v) {
-        let tmp = p.with_extension("tmp");
-        if fs::write(&tmp, b).is_ok() {
-            let _ = fs::rename(tmp, p);
-        }
+    use std::io::Write;
+    let Ok(b) = serde_json::to_vec(v) else { return };
+    let tmp = p.with_extension("tmp");
+    let ok = fs::File::create(&tmp).and_then(|mut f| { f.write_all(&b)?; f.sync_all() }).is_ok();
+    if ok {
+        let _ = fs::rename(tmp, p);
     }
 }
 
@@ -396,6 +410,10 @@ fn vigie_bg(app: &AppHandle, args: Vec<&'static str>, timeout_s: u64) {
         let st = app.state::<AppState>();
         let u = user(&st);
         let Some(exe) = vigie::find(u.vigie_path.as_deref()) else { return };
+        // never pass a flag this Vigie does not declare (an old one would open its window)
+        if args[0] == "--couper-dev" && !vigie::caps(&exe).dev_kill {
+            return;
+        }
         let Some(out) = vigie::run(&exe, &args, std::time::Duration::from_secs(timeout_s)) else { return };
         let Some(msg) = out.lines().map(str::trim).filter(|l| !l.is_empty()).last().map(str::to_string) else { return };
         let _ = app.emit("vigie", serde_json::json!({ "arg": args[0], "msg": msg }));
@@ -415,18 +433,29 @@ fn game_mode_on(app: &AppHandle) -> bool {
 /// Ok = go; Err("exe-changed") = ask the user first (Ultimate shows a confirmation, then calls
 /// `launch` again with `confirm`). A confirmed or first-seen fingerprint is saved.
 fn check_admin_exe(st: &AppState, g: &Game, confirm: bool) -> Result<(), String> {
-    if g.source != "pc" || !g.launch.to_lowercase().ends_with(".exe") {
-        return Ok(());
-    }
-    let mut list = customs(st);
-    let Some(c) = list.iter_mut().find(|c| c.id == g.id) else { return Ok(()) };
-    let now = exe_fingerprint(&c.exe);
-    if c.fp.is_some() && c.fp != now && !confirm {
-        return Err("exe-changed".into());
-    }
-    if c.fp != now {
-        c.fp = now;
-        save(&st.dir.join("custom.json"), &list);
+    let now = exe_fingerprint(&g.launch);
+    if g.source == "pc" {
+        // hand-added (.exe, .bat, .lnk): fingerprint taken when the game was added
+        let mut list = customs(st);
+        let Some(c) = list.iter_mut().find(|c| c.id == g.id) else { return Ok(()) };
+        if c.fp.is_some() && c.fp != now && !confirm {
+            return Err("exe-changed".into());
+        }
+        if c.fp != now {
+            c.fp = now;
+            save(&st.dir.join("custom.json"), &list);
+        }
+    } else {
+        // GOG (opt-in): fingerprint taken the first time it is run as admin
+        let mut u = user(st);
+        let known = u.admin_fp.get(&g.id).cloned();
+        if known.is_some() && known != now && !confirm {
+            return Err("exe-changed".into());
+        }
+        if known != now {
+            match &now { Some(f) => u.admin_fp.insert(g.id.clone(), f.clone()), None => u.admin_fp.remove(&g.id) };
+            save(&user_path(st), &u);
+        }
     }
     Ok(())
 }
@@ -461,7 +490,8 @@ async fn launch(app: AppHandle, id: String, confirm: Option<bool>) -> Result<(),
     }
     // hand-added games are timed by watch_pc (also when started outside Ultimate): here we only
     // follow the session
-    track(app.clone(), id, dir, g.source != "pc", game_mode);
+    // Steam counts its own time; hand-added games are counted by watch_pc
+    track(app.clone(), id, dir, g.source != "pc" && g.source != "steam", game_mode);
     Ok(())
 }
 
@@ -619,6 +649,13 @@ async fn restore_settings(format: String) -> Result<String, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+/// Palette « Rendre le mode jeu » : `Vigie --apres-jeu` now, for a session whose game was never
+/// seen (that case does not wake the apps up by itself).
+#[tauri::command]
+fn game_mode_end(app: AppHandle) {
+    vigie_bg(&app, vec!["--apres-jeu"], 30);
+}
+
 /// Test sandbox folder (`ULTIMATE_TEST_SANDBOX`), None in normal use. Automated tests refuse to
 /// run without it.
 #[tauri::command]
@@ -662,10 +699,24 @@ fn watch_pc(app: AppHandle) {
                             *t.entry(id.clone()).or_insert(0) += mins;
                             save(&st.dir.join("tracked.json"), &*t);
                         }
-                        if let Some(g) = st.lib.lock().unwrap().iter_mut().find(|g| &g.id == id) {
-                            g.tracked_min += mins;
-                            g.playtime_min += mins;
-                            g.last_played = now();
+                        let done = {
+                            let mut lib = st.lib.lock().unwrap();
+                            lib.iter_mut().find(|g| &g.id == id).map(|g| {
+                                g.tracked_min += mins;
+                                g.playtime_min += mins;
+                                g.last_played = now();
+                                g.clone()
+                            })
+                        };
+                        // same auto-backup as track() does for the other games
+                        if let Some(g) = done.filter(|_| mins > 0 && user(&st).auto_backup) {
+                            let app2 = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Ok((n, _)) = backup_game(&app2, &g).await {
+                                    let fr = user(&app2.state::<AppState>()).lang == "fr";
+                                    notify(&app2, &g.name, &if fr { format!("Sauvegarde : {n} fichier(s)") } else { format!("Backup: {n} file(s)") });
+                                }
+                            });
                         }
                         changed = true;
                     }
@@ -1020,10 +1071,12 @@ pub struct User {
     admin_games: HashMap<String, bool>,
     /// recommended settings, per game: { slider: 0..4, target: FPS }
     tuning: HashMap<String, serde_json::Value>,
+    /// fingerprint of the exe of games run as admin outside the hand-added ones (GOG)
+    admin_fp: HashMap<String, String>,
 }
 impl Default for User {
     fn default() -> Self {
-        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None, lang: "en".into(), game_mode: true, dev_guard: true, vigie_path: None, admin_games: HashMap::new(), tuning: HashMap::new() }
+        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None, lang: "en".into(), game_mode: true, dev_guard: true, vigie_path: None, admin_games: HashMap::new(), tuning: HashMap::new(), admin_fp: HashMap::new() }
     }
 }
 
@@ -1046,6 +1099,7 @@ fn set_user(st: State<AppState>, mut u: User) -> Result<(), String> {
     let old = user(&st);
     u.seen_free = old.seen_free;
     u.seen_deals = old.seen_deals;
+    u.admin_fp = old.admin_fp; // kept on the Rust side only
     accounts::FR.store(u.lang == "fr", std::sync::atomic::Ordering::Relaxed);
     save(&user_path(&st), &u);
     // the registry is only touched when the choice changes; a failure there loses nothing else
@@ -1170,7 +1224,7 @@ fn open_path(path: String) -> Result<(), String> {
 
 fn backup_dir(st: &AppState) -> PathBuf {
     user(st).backup_dir.map(PathBuf::from).unwrap_or_else(|| {
-        let docs = std::env::var("USERPROFILE").map(|h| PathBuf::from(h).join("Documents")).unwrap_or_else(|_| st.dir.clone());
+        let docs = saves::documents().or_else(|| std::env::var("USERPROFILE").ok().map(|h| PathBuf::from(h).join("Documents"))).unwrap_or_else(|| st.dir.clone());
         docs.join("Ultimate - Sauvegardes")
     })
 }
@@ -1434,6 +1488,13 @@ async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    let st = app.state::<AppState>();
+    // a game followed by track() or a hand-added exe timed by watch_pc: its session would be lost
+    let running: HashSet<String> = win::exe_paths().into_iter().collect();
+    let pc_running = customs(&st).iter().any(|c| running.contains(&c.exe.to_lowercase()));
+    if !st.tracking.lock().unwrap().is_empty() || pc_running {
+        return Err("Une partie est en cours : la mise à jour attendra qu'elle soit finie".into());
+    }
     let url = update_url(&app.state::<AppState>()).ok_or("Aucune source de mise à jour configurée")?;
     let up = app.updater_builder().endpoints(vec![url.parse::<tauri::Url>().map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
     let u = up.check().await.map_err(|e| e.to_string())?.ok_or("Déjà à jour")?;
@@ -1551,7 +1612,7 @@ pub fn run() {
             watch_pc(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version, vigie_status, dev_state, dev_kill, game_memory, test_mode, hw_info, game_settings, apply_settings, restore_settings])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version, vigie_status, dev_state, dev_kill, game_memory, game_mode_end, test_mode, hw_info, game_settings, apply_settings, restore_settings])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }
@@ -1599,6 +1660,23 @@ mod tests {
         let mut w = vec![1, 2];
         super::keep_last(&mut w, 500);
         assert_eq!(w, vec![1, 2]);
+    }
+
+    #[test]
+    fn unreadable_data_is_put_aside_not_erased() {
+        let dir = std::env::temp_dir().join(format!("ultimate-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("user.json");
+        std::fs::write(&p, b"{\"favorites\": 3").unwrap(); // truncated
+        let u: super::User = super::load(&p);
+        assert!(u.favorites.is_empty());
+        assert!(!p.exists());
+        let aside: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(aside.iter().any(|n| n.starts_with("user.illisible-")), "{aside:?}");
+        super::save(&p, &u);
+        assert!(super::load::<super::User>(&p).close_to_tray);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

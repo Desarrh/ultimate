@@ -144,6 +144,11 @@ pub fn apply_file(file: &Path, values: &HashMap<String, Value>) -> Result<Applie
     use std::io::Write;
     let orig = fs::read(file).map_err(|e| e.to_string())?;
     let mut doc: Value = serde_json::from_slice(&orig).map_err(|e| e.to_string())?;
+    // only write a file whose layout we reproduce byte for byte (a new game version could
+    // change it): otherwise nothing is touched
+    if to_game_json(&doc)? != orig {
+        return Err("format-inconnu".into());
+    }
     let mut res = cp2077_apply(&mut doc, values);
     if res.changed.is_empty() {
         return Ok(res);
@@ -238,6 +243,21 @@ mod tests {
         let orig = fs::read(p).unwrap();
         let v: Value = serde_json::from_slice(&orig).unwrap();
         assert!(to_game_json(&v).unwrap() == orig, "le format du fichier ne serait pas conservé");
+    }
+
+    #[test]
+    fn unknown_layout_is_never_written() {
+        let dir = std::env::temp_dir().join(format!("ultimate-layout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("UserSettings.json");
+        let compact = serde_json::to_vec(&doc()).unwrap(); // valid JSON, other layout
+        fs::write(&file, &compact).unwrap();
+        let v: HashMap<String, Value> = serde_json::from_value(json!({"TextureQuality": "High"})).unwrap();
+        assert_eq!(apply_file(&file, &v).unwrap_err(), "format-inconnu");
+        assert_eq!(fs::read(&file).unwrap(), compact);
+        assert!(backups(&file).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

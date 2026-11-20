@@ -10,7 +10,10 @@ pub async fn manifest(c: &reqwest::Client, dir: &Path) -> Result<PathBuf, String
     if !fresh {
         let r = c.get(MANIFEST).timeout(Duration::from_secs(120)).send().await.map_err(|e| e.to_string())?;
         let b = r.error_for_status().map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
-        fs::write(&p, &b).map_err(|e| e.to_string())?;
+        // whole file or nothing: a truncated manifest would look fresh for 7 days
+        let tmp = p.with_extension("yaml.tmp");
+        fs::write(&tmp, &b).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
     }
     Ok(p)
 }
@@ -109,6 +112,26 @@ pub fn patterns(manifest: &Path, name: &str, appid: Option<u32>) -> Vec<String> 
     out
 }
 
+/// The user's real Documents folder (follows a OneDrive or other redirection).
+pub fn documents() -> Option<PathBuf> {
+    known_folder("Personal").map(PathBuf::from)
+}
+
+/// Backups kept per game: older dated folders are removed after a new one is made.
+const KEEP: usize = 10;
+
+fn prune(game_dir: &Path, keep: usize) {
+    let Ok(rd) = fs::read_dir(game_dir) else { return };
+    // only our own dated folders (Unix seconds), never anything else the user put there
+    let mut dated: Vec<(u64, PathBuf)> = rd.flatten().filter(|e| e.path().is_dir())
+        .filter_map(|e| Some((e.file_name().to_str()?.parse::<u64>().ok()?, e.path()))).collect();
+    dated.sort();
+    let extra = dated.len().saturating_sub(keep);
+    for (_, p) in dated.into_iter().take(extra) {
+        let _ = fs::remove_dir_all(p);
+    }
+}
+
 fn known_folder(name: &str) -> Option<String> {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
     let k = RegKey::predef(HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders").ok()?;
@@ -197,6 +220,9 @@ pub fn backup(manifest: &Path, backup_dir: &Path, name: &str, appid: Option<u32>
         let _ = fs::remove_dir_all(&dest);
         return Err("Aucun fichier de sauvegarde trouvé sur ce PC.".into());
     }
+    if let Some(game_dir) = dest.parent() {
+        prune(game_dir, KEEP);
+    }
     Ok((n, dest))
 }
 
@@ -219,6 +245,21 @@ mod tests {
         assert!(patterns(&m, "Inconnu", Some(1)).is_empty());
         let _ = fs::remove_file(m);
     }
+    #[test]
+    fn keeps_the_newest_backups_only() {
+        let d = std::env::temp_dir().join(format!("ultimate-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        for t in [100, 300, 200, 400] {
+            fs::create_dir_all(d.join(t.to_string())).unwrap();
+        }
+        fs::create_dir_all(d.join("mes notes")).unwrap();
+        prune(&d, 2);
+        let mut left: Vec<String> = fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        left.sort();
+        assert_eq!(left, vec!["300", "400", "mes notes"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn expands_placeholders() {
         let p = expand("<home>/AppData/<storeUserId>/x", None, None).unwrap();

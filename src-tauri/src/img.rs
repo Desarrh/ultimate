@@ -42,7 +42,7 @@ fn query(uri: &str) -> (String, std::collections::HashMap<String, String>) {
 }
 
 fn mime(b: &[u8]) -> &'static str {
-    if b.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else if b.starts_with(b"RIFF") { "image/webp" } else { "image/jpeg" }
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else if b.starts_with(b"RIFF") { "image/webp" } else if b.starts_with(b"GIF8") { "image/gif" } else if b.starts_with(b"BM") { "image/bmp" } else { "image/jpeg" }
 }
 
 const PIC_EXT: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
@@ -65,7 +65,9 @@ pub async fn serve(cache: PathBuf, http: reqwest::Client, uri: String) -> (Vec<u
             return (vec![], "text/plain", 403);
         }
     }
-    let key = format!("{:016x}_{w}", fnv(&src));
+    // a local file replaced at the same path must not keep its old cached version
+    let stamp = if remote { String::new() } else { fs::metadata(&src).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs().to_string()).unwrap_or_default() };
+    let key = format!("{:016x}_{w}", fnv(&format!("{src}{stamp}")));
     let _ = fs::create_dir_all(&cache);
     for ext in ["jpg", "png"] {
         if let Ok(b) = fs::read(cache.join(format!("{key}.{ext}"))) {
@@ -86,8 +88,11 @@ pub async fn serve(cache: PathBuf, http: reqwest::Client, uri: String) -> (Vec<u
     if bytes.is_empty() {
         return (vec![], "text/plain", 500);
     }
-    let _ = fs::write(cache.join(format!("{key}.{}", if png { "png" } else { "jpg" })), &bytes);
     let m = mime(&bytes);
+    // formats the image crate cannot decode (gif, webp, bmp) are served as they are, not cached
+    if m == "image/png" || m == "image/jpeg" {
+        let _ = fs::write(cache.join(format!("{key}.{}", if png { "png" } else { "jpg" })), &bytes);
+    }
     (bytes, m, 200)
 }
 
