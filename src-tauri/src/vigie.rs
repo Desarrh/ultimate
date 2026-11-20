@@ -21,6 +21,8 @@ pub struct Caps {
     pub game_mode: bool,
     pub dev_state: bool,
     pub dev_kill: bool,
+    /// `--couper-dev --seulement <cle,…>`: stop exactly what was shown
+    pub dev_kill_only: bool,
     pub game_memory: bool,
     /// `--memoire-jeu` also takes an install folder (Steam / Epic / GOG games)
     pub game_memory_dir: bool,
@@ -90,6 +92,7 @@ pub fn caps(exe: &Path) -> Caps {
         game_mode: true,
         dev_state: declares(&b, "etat-dev"),
         dev_kill: declares(&b, "couper-dev"),
+        dev_kill_only: declares(&b, "couper-dev-seulement"),
         game_memory: declares(&b, "memoire-jeu"),
         game_memory_dir: declares(&b, "memoire-jeu-dossier"),
         marked: contains(&b, &"VigieCli".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()) || contains(&b, b"VigieCli:"),

@@ -141,7 +141,7 @@ await check('garde-fou : « Tout couper »', async () => {
   const t0 = Date.now();
   while (!(/--couper-dev/.test(calls()) && /--avant-jeu/.test(calls())) && Date.now() - t0 < 8000) await sleep(300);
   const c = calls();
-  assert(/--couper-dev/.test(c) && /--avant-jeu/.test(c), c);
+  assert(/--couper-dev --seulement 1:111,wsl/.test(c) && /--avant-jeu/.test(c), c);
   await sleep(6000);
   const { execSync } = await import('node:child_process');
   execSync('powershell -NoProfile -Command "Get-Process Game | Where-Object { $_.Path -like \'*fakegame*\' } | Stop-Process -Force"');

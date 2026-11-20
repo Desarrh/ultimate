@@ -404,7 +404,7 @@ impl GameMode {
 static GAME_SESSIONS: GameMode = GameMode::new();
 
 /// Runs a Vigie command in the background (never awaited) and shows its one-line summary.
-fn vigie_bg(app: &AppHandle, args: Vec<&'static str>, timeout_s: u64) {
+fn vigie_bg(app: &AppHandle, args: Vec<String>, timeout_s: u64) {
     let app = app.clone();
     std::thread::spawn(move || {
         let st = app.state::<AppState>();
@@ -414,9 +414,10 @@ fn vigie_bg(app: &AppHandle, args: Vec<&'static str>, timeout_s: u64) {
         if args[0] == "--couper-dev" && !vigie::caps(&exe).dev_kill {
             return;
         }
-        let Some(out) = vigie::run(&exe, &args, std::time::Duration::from_secs(timeout_s)) else { return };
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Some(out) = vigie::run(&exe, &argv, std::time::Duration::from_secs(timeout_s)) else { return };
         let Some(msg) = out.lines().map(str::trim).filter(|l| !l.is_empty()).last().map(str::to_string) else { return };
-        let _ = app.emit("vigie", serde_json::json!({ "arg": args[0], "msg": msg }));
+        let _ = app.emit("vigie", serde_json::json!({ "arg": &args[0], "msg": msg }));
         let focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
         if !focused && u.notify {
             notify(&app, "Vigie", &msg);
@@ -486,7 +487,7 @@ async fn launch(app: AppHandle, id: String, confirm: Option<bool>) -> Result<(),
     }
     let game_mode = tauri::async_runtime::spawn_blocking({ let app = app.clone(); move || game_mode_on(&app) }).await.unwrap_or(false);
     if game_mode && GAME_SESSIONS.start() {
-        vigie_bg(&app, vec!["--avant-jeu"], 45);
+        vigie_bg(&app, vec!["--avant-jeu".into()], 45);
     }
     // hand-added games are timed by watch_pc (also when started outside Ultimate): here we only
     // follow the session
@@ -570,10 +571,22 @@ async fn game_memory(app: AppHandle, id: String) -> Option<serde_json::Value> {
 }
 
 /// "Tout couper": `Vigie --couper-dev`, detached; its summary arrives later as a "vigie" event.
-/// Dev build next to its own vite server: Docker and WSL only, the dev servers are kept.
+/// With a recent Vigie, only the items shown (`keys`, the `cle` of `--etat-dev`) are stopped: a
+/// server started after the card was shown is never touched, and the dev build's own Vite server
+/// (removed from the list) neither. Older Vigie: everything, or Docker and WSL only in a dev build.
 #[tauri::command]
-fn dev_kill(app: AppHandle) {
-    let args = if OWN_DEV_SERVER.load(std::sync::atomic::Ordering::Relaxed) { vec!["--couper-dev", "--docker", "--wsl"] } else { vec!["--couper-dev"] };
+fn dev_kill(app: AppHandle, keys: Option<Vec<String>>) {
+    let st = app.state::<AppState>();
+    let u = user(&st);
+    let only = vigie::find(u.vigie_path.as_deref()).map(|e| vigie::caps(&e).dev_kill_only).unwrap_or(false);
+    let keys: Vec<String> = keys.unwrap_or_default().into_iter().filter(|k| !k.is_empty() && !k.contains(',')).collect();
+    let args: Vec<String> = if only && !keys.is_empty() {
+        vec!["--couper-dev".into(), "--seulement".into(), keys.join(",")]
+    } else if OWN_DEV_SERVER.load(std::sync::atomic::Ordering::Relaxed) {
+        vec!["--couper-dev".into(), "--docker".into(), "--wsl".into()]
+    } else {
+        vec!["--couper-dev".into()]
+    };
     vigie_bg(&app, args, 60);
 }
 
@@ -653,7 +666,7 @@ async fn restore_settings(format: String) -> Result<String, String> {
 /// seen (that case does not wake the apps up by itself).
 #[tauri::command]
 fn game_mode_end(app: AppHandle) {
-    vigie_bg(&app, vec!["--apres-jeu"], 30);
+    vigie_bg(&app, vec!["--apres-jeu".into()], 30);
 }
 
 /// Test sandbox folder (`ULTIMATE_TEST_SANDBOX`), None in normal use. Automated tests refuse to
@@ -748,7 +761,7 @@ fn track(app: AppHandle, id: String, dir: String, count: bool, game_mode: bool) 
         let st = app.state::<AppState>();
         let end_game_mode = || {
             if game_mode && GAME_SESSIONS.end() {
-                vigie_bg(&app, vec!["--apres-jeu"], 30);
+                vigie_bg(&app, vec!["--apres-jeu".into()], 30);
             }
         };
         let mut waited = 0;

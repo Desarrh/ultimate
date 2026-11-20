@@ -3,7 +3,7 @@
 use std::io::Write;
 
 #[used]
-static MARK: &str = "VigieCli:avant-jeu VigieCli:apres-jeu VigieCli:etat-dev VigieCli:couper-dev VigieCli:memoire-jeu VigieCli:memoire-jeu-dossier";
+static MARK: &str = "VigieCli:avant-jeu VigieCli:apres-jeu VigieCli:etat-dev VigieCli:couper-dev VigieCli:memoire-jeu VigieCli:memoire-jeu-dossier VigieCli:couper-dev-seulement";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -13,7 +13,7 @@ fn main() {
         let _ = writeln!(f, "{t} {}", args.join(" "));
     }
     let out = match args.first().map(String::as_str) {
-        Some("--etat-dev") => r#"{"v":1,"items":[{"kind":"node","label":"npm run dev (Launcher)","pids":[1],"ram_mo":850},{"kind":"wsl","label":"WSL (vmmem)","pids":[2],"ram_mo":3100}],"total_mo":3950}"#.to_string(),
+        Some("--etat-dev") => r#"{"v":1,"items":[{"kind":"node","label":"npm run dev (Launcher)","pids":[1],"ram_mo":850,"cle":"1:111"},{"kind":"wsl","label":"WSL (vmmem)","pids":[2],"ram_mo":3100,"cle":"wsl"}],"total_mo":3950}"#.to_string(),
         Some("--couper-dev") => "2 serveurs coupes, WSL arrete, 3,9 Go liberes".into(),
         Some("--avant-jeu") => "2,3 Go liberes".into(),
         Some("--apres-jeu") => "Plan d'alimentation restaure".into(),

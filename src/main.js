@@ -159,6 +159,8 @@ function paintMem(g) {
 
 /** Worth asking? WSL alone is often up (~1 Go) and only counts from 2 Go. */
 const devWorth = (st) => (st?.items || []).some((x) => x.kind !== 'wsl' || (x.ram_mo || 0) >= 2048);
+/** `cle` of each item shown: only those are stopped by a recent Vigie. */
+const devKeys = (st) => (st?.items || []).map((x) => x.cle).filter(Boolean);
 const within = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
 const mo = (n) => (n >= 1000 ? `${dec(n / 1024)} ${T('Go', 'GB')}` : `${Math.round(n)} ${T('Mo', 'MB')}`);
 /** Non-blocking "Tout couper / Garder" card; resolves false (keep) after 2 s without an answer. */
@@ -1206,7 +1208,7 @@ async function launch(g, el) {
   if (g.installed && S.user.devGuard && VIG.caps.devState) {
     // usually already fetched (hover, game page): otherwise wait 350 ms at most, then play anyway
     const st = await within(devFetch(), 350);
-    if (devWorth(st) && await devPrompt(st)) { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); }
+    if (devWorth(st) && await devPrompt(st)) { invoke('dev_kill', { keys: devKeys(st) }).catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); }
   }
   try { await invoke('launch', { id: g.id }); toast(g.installed ? `${g.name}…` : 'Installation…'); }
   catch (err) {
@@ -1254,7 +1256,7 @@ document.addEventListener('click', async (e) => {
       renderMenus(); return;
     case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
     case 'tune-fps': setTune(g, { target: +v }); return;
-    case 'dev-kill': invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); return;
+    case 'dev-kill': invoke('dev_kill', { keys: devKeys(DEV.v) }).catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); return;
     case 'confirm-yes': closeConfirm(true); return;
     case 'confirm-no': if (e.target.closest('.dialog') && el.classList.contains('overlay')) return; closeConfirm(false); return;
     case 'tune-apply': tuneWrite(g, false); return;
@@ -1524,7 +1526,7 @@ function commands() {
   if (VIG.caps.gameMode) L.push({ t: `${T('Mode jeu Vigie', 'Vigie game mode')} : ${onoff(S.user.gameMode)}`, run: () => { S.user.gameMode = !S.user.gameMode; saveUser(); toast(`Vigie : ${onoff(S.user.gameMode)}`); } });
   if (VIG.caps.gameMode) L.push({ t: T('Rendre le mode jeu maintenant (Vigie --apres-jeu)', 'End game mode now (Vigie --apres-jeu)'), run: () => { invoke('game_mode_end').catch(() => {}); toast(T('Fin du mode jeu…', 'Ending game mode…')); } });
   if (VIG.caps.devState) L.push({ t: `${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`, run: () => { S.user.devGuard = !S.user.devGuard; saveUser(); toast(`${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`); } });
-  if (VIG.caps.devKill) L.push({ t: T('Couper les serveurs de dev, Docker et WSL', 'Stop dev servers, Docker and WSL'), run: () => { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); } });
+  if (VIG.caps.devKill) L.push({ t: T('Couper les serveurs de dev, Docker et WSL', 'Stop dev servers, Docker and WSL'), run: () => { invoke('dev_kill', { keys: devKeys(DEV.v) }).catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); } });
   if (g) {
     if (canAdmin(g)) L.push({ t: `${g.name} · ${T('lancer en admin', 'run as admin')} : ${onoff(isAdmin(g))}`, run: () => act('admin') });
     if (g.installed) L.push({ t: `${g.name} · ${T('sauvegarder les saves', 'back up saves')}`, run: () => act('backup') });
