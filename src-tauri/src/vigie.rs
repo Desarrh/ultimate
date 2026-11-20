@@ -22,6 +22,8 @@ pub struct Caps {
     pub dev_state: bool,
     pub dev_kill: bool,
     pub game_memory: bool,
+    /// `--memoire-jeu` also takes an install folder (Steam / Epic / GOG games)
+    pub game_memory_dir: bool,
     /// the exe carries the VigieCli marker (required for a path typed in the settings)
     #[serde(skip)]
     pub marked: bool,
@@ -87,6 +89,7 @@ pub fn caps(exe: &Path) -> Caps {
         dev_state: declares(&b, "etat-dev"),
         dev_kill: declares(&b, "couper-dev"),
         game_memory: declares(&b, "memoire-jeu"),
+        game_memory_dir: declares(&b, "memoire-jeu-dossier"),
         marked: contains(&b, &"VigieCli".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()) || contains(&b, b"VigieCli:"),
     }).unwrap_or_default();
     *cache = Some((exe.to_path_buf(), mtime, c));

@@ -3,7 +3,7 @@
 use std::io::Write;
 
 #[used]
-static MARK: &str = "VigieCli:avant-jeu VigieCli:apres-jeu VigieCli:etat-dev VigieCli:couper-dev VigieCli:memoire-jeu";
+static MARK: &str = "VigieCli:avant-jeu VigieCli:apres-jeu VigieCli:etat-dev VigieCli:couper-dev VigieCli:memoire-jeu VigieCli:memoire-jeu-dossier";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

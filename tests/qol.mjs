@@ -3,6 +3,8 @@
 // l'écran : le test pilote la page par DevTools, sans souris ni clavier système).
 // Prérequis : appli lancée avec ULTIMATE_TEST_SANDBOX=<dossier> (sinon le test s'arrête) et, sur un profil de test, un jeu ajouté « Zork Fakegame QA » (petit exe qui dort, dans le bac à sable,
 // admin désactivé) et `vigiePath` vers le faux Vigie.exe (tests/fakes, construit par qa-start.sh) qui journalise ses appels dans calls.log :
+// Bac à sable conseillé : C:\Dev\Launcher\.qa (hors AppData, donc hors virtualisation MSIX ; ignoré par git).
+// Une appli de test fraîche par passage (relancer qa-start.sh) : les caches de la page faussent un 2e passage.
 // node tests/qol.mjs <dossier captures> <calls.log>
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
@@ -166,7 +168,9 @@ await check('réglages conseillés : appliquer puis restaurer (copie, jamais le 
   await page.evaluate(() => document.querySelector('[data-act="tab"][data-v="tune"]').click());
   await page.waitForSelector('[data-act="tune-apply"]', { timeout: 5000 });
   const label = await page.$eval('[data-act="tune-apply"]', (e) => e.textContent);
+  await page.$eval('#toast', (e) => { e.textContent = ''; });
   await page.$eval('[data-act="tune-apply"]', (e) => e.click());
+  await page.waitForFunction(() => /appli/i.test(document.querySelector('#toast').textContent), { timeout: 5000 });
   await page.waitForSelector('[data-act="tune-restore"]', { timeout: 5000 });
   const baks = fs.readdirSync(dir).filter((f) => f === 'UserSettings.json.avant-ultimate.bak');
   assert(baks.length === 1 && hash(path.join(dir, baks[0])) === orig, `sauvegarde : ${baks}`);
@@ -181,12 +185,17 @@ await check('réglages conseillés : appliquer puis restaurer (copie, jamais le 
 });
 
 await check('mémoire manquante (Vigie --memoire-jeu) sous Jouer', async () => {
-  fs.writeFileSync(CALLS, '');
+  // no log reset: Cyberpunk's answer may come from the 20 s cache filled by the previous check
   await page.evaluate(() => { const b = document.createElement('button'); b.dataset.act = 'sel'; b.dataset.id = 'pc:qafake'; document.body.append(b); b.click(); b.remove(); });
   await page.waitForFunction(() => { const m = document.querySelector('#memhint'); return m && !m.hidden && m.textContent.trim(); }, { timeout: 5000 });
   const txt = await page.$eval('#memhint', (e) => e.textContent.trim());
   assert(/1[.,]4/.test(txt) && /--memoire-jeu .*Game\.exe/i.test(calls()), `${txt} | ${calls()}`);
-  return txt;
+  await page.evaluate(() => { const b = document.createElement('button'); b.dataset.act = 'sel'; b.dataset.id = 'steam:1091500'; document.body.append(b); b.click(); b.remove(); });
+  const t0 = Date.now();
+  while (!/--memoire-jeu .*Cyberpunk 2077\s*$/m.test(calls()) && Date.now() - t0 < 5000) await sleep(200);
+  assert(/--memoire-jeu .*Cyberpunk 2077\s*$/m.test(calls()), `dossier non passé : ${calls()}`);
+  await page.waitForFunction(() => { const m = document.querySelector('#memhint'); return m && !m.hidden && m.textContent.trim(); }, { timeout: 5000 });
+  return `${txt} (exe) ; Cyberpunk : dossier d'installation passé à Vigie`;
 });
 
 console.log(errors.length ? `Erreurs JS : ${errors.join(' / ')}` : 'Aucune erreur JS');

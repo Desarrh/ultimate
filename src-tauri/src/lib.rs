@@ -523,14 +523,18 @@ fn own_dev_servers(v: &mut serde_json::Value) -> bool {
 async fn game_memory(app: AppHandle, id: String) -> Option<serde_json::Value> {
     let st = app.state::<AppState>();
     let g = st.lib.lock().unwrap().iter().find(|g| g.id == id).cloned()?;
-    // Ultimate only knows the exe of hand-added games (Steam / Epic / GOG: just their folder)
-    let target = (g.source == "pc" && g.launch.to_lowercase().ends_with(".exe")).then(|| g.launch.clone())?;
+    // hand-added games: their exe; Steam / Epic / GOG: their install folder (newer Vigie only)
+    let exe_target = (g.source == "pc" && g.launch.to_lowercase().ends_with(".exe")).then(|| g.launch.clone());
+    let dir_target = g.install_path.clone().filter(|_| g.installed && g.source != "pc");
     let u = user(&st);
     tauri::async_runtime::spawn_blocking(move || {
         let exe = vigie::find(u.vigie_path.as_deref())?;
-        if !vigie::caps(&exe).game_memory {
-            return None;
-        }
+        let caps = vigie::caps(&exe);
+        let target = match (exe_target, dir_target) {
+            (Some(e), _) if caps.game_memory => e,
+            (None, Some(d)) if caps.game_memory_dir => d,
+            _ => return None,
+        };
         vigie::parse_game_memory(&vigie::run(&exe, &["--memoire-jeu", &target], std::time::Duration::from_millis(1500))?)
     }).await.ok().flatten()
 }
