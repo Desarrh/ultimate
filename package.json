@@ -14,7 +14,7 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "test": "cd src-tauri && cargo test",
+    "test": "node tests/fuzzy.mjs && node tests/tuning.mjs && cd src-tauri && cargo test",
     "audit": "python tests/audit.py",
     "test:ui": "node tests/ui.mjs",
     "release": "node scripts/release.mjs Desarrh/ultimate"

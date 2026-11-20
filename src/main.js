@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LANG, LOCALE, T, dec, setLang, startI18n } from './i18n.js';
+import { completion, norm, prep, query, score } from './fuzzy.js';
+import { SLIDER, cpuShort, recommend, sheetFor } from './tuning.js';
 const PS = LANG === 'en' ? '' : ' '; // space before % in French only
 
 const S = {
@@ -10,7 +12,7 @@ const S = {
   user: { collections: [], favorites: [], hidden: [], closeToTray: true, autostart: false, notify: true, autoBackup: true, backupDir: null },
   friends: null, wishlist: null,
   view: 'home', sel: null, q: '', src: 'all', col: 'Tout', sort: 'recent', dir: 'desc', layout: 'grid', layoutPinned: false, achShow: 9, homeDirty: false, trophyDates: {},
-  tab: 'ach', achF: 'all', openNews: 0, menu: null, sub: null, showSoft: false, busy: false, modal: null, homeY: 0,
+  tab: 'ach', achF: 'all', openNews: 0, pal: null, menu: null, sub: null, showSoft: false, busy: false, modal: null, homeY: 0,
 };
 const $ = (s) => document.querySelector(s);
 const P = (() => {
@@ -74,6 +76,7 @@ const icon = {
   star: (on) => `<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>`,
   upd: I('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>', 14),
   tick: '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>',
+  shield: I('<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/>', 16),
   crown: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7l4.5 4L12 4l4.5 7L21 7l-1.8 11H4.8z"/></svg>',
 };
 
@@ -96,14 +99,68 @@ const isHidden = (g) => S.user.hidden.includes(g.id);
 const isFav = (g) => S.user.favorites.includes(g.id);
 const visible = () => S.games.filter((g) => !isExtra(g) && (S.col === 'Masqués' ? isHidden(g) : !isHidden(g)) && (!isSoft(g) || S.showSoft || S.col === 'Logiciel') && (!isDemo(g) || S.col === 'Démo' || S.col === 'Masqués'));
 const pct = (id) => { const s = S.achsum[id]; return s && s[1] ? Math.round((s[0] / s[1]) * 100) : null; };
+// ---------- fuzzy search (names prepared once per game object, i.e. per "library" event) ----------
+const FZ = new WeakMap();
+const fz = (g) => { let e = FZ.get(g); if (!e) { e = prep(g.name); FZ.set(g, e); } return e; };
+const NM = new Map();
+const nrm = (x) => { let v = NM.get(x); if (v === undefined) { if (NM.size > 4000) NM.clear(); v = norm(x); NM.set(x, v); } return v; };
+/** Relevance of a game for a prepared query: its name first, then its tags and memo. */
+function rel(Q, g) {
+  const s = score(Q, fz(g));
+  if (s || Q.n.length < 2) return s;
+  if (g.tags.some((t) => nrm(lbl(t)).includes(Q.n))) return 150;
+  return S.memos[g.id] && nrm(S.memos[g.id]).includes(Q.n) ? 100 : 0;
+}
+const ranked = (list, q) => {
+  const Q = query(q), sc = new Map();
+  for (const g of list) { const v = rel(Q, g); if (v) sc.set(g, v); }
+  return [...sc.keys()].sort((a, b) => sc.get(b) - sc.get(a) || b.lastPlayed - a.lastPlayed);
+};
+
+// ---------- run as admin (mirror of wants_admin in lib.rs) ----------
+const canAdmin = (g) => (g.source === 'pc' || g.source === 'gog') && !g.launch.includes('://') && /\.(exe|lnk|bat)$/i.test(g.launch);
+const isAdmin = (g) => canAdmin(g) && (S.user.adminGames?.[g.id] ?? (g.source === 'pc' && /\.exe$/i.test(g.launch)));
+
+// ---------- Vigie (optional): game mode and dev guard ----------
+const VIG = { found: false, path: null, caps: {} };
+const loadVigie = () => invoke('vigie_status').then((v) => { Object.assign(VIG, v); }).catch(() => {});
+const DEV = { at: 0, v: null, p: null };
+/** Dev servers / Docker / WSL from `Vigie --etat-dev`, cached 20 s; prefetched before the click. */
+function devFetch() {
+  if (!S.user.devGuard || !VIG.caps.devState) return Promise.resolve(null);
+  if (performance.now() - DEV.at < (DEV.v ? 20000 : 5000)) return Promise.resolve(DEV.v); // a failure is retried sooner
+  DEV.p ??= invoke('dev_state').catch(() => null).then((v) => { DEV.v = v; DEV.at = performance.now(); DEV.p = null; return v; });
+  return DEV.p;
+}
+/** Worth asking? WSL alone is often up (~1 Go) and only counts from 2 Go. */
+const devWorth = (st) => (st?.items || []).some((x) => x.kind !== 'wsl' || (x.ram_mo || 0) >= 2048);
+const within = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
+const mo = (n) => (n >= 1000 ? `${dec(n / 1024)} ${T('Go', 'GB')}` : `${Math.round(n)} ${T('Mo', 'MB')}`);
+/** Non-blocking "Tout couper / Garder" card; resolves false (keep) after 2 s without an answer. */
+function devPrompt(st) {
+  const box = $('#devguard');
+  const items = st.items || [];
+  const names = [...new Set(items.map((x) => x.label || x.kind))].slice(0, 4).join(' · ');
+  return new Promise((done) => {
+    const end = (kill) => { clearTimeout(t); box.innerHTML = ''; box.onclick = null; devPrompt.end = null; done(kill); };
+    const t = setTimeout(() => end(false), 2000);
+    devPrompt.end = end;
+    box.innerHTML = `<div class="devguard solid" role="alertdialog" aria-label="${esc(T('Serveurs de dev actifs', 'Dev servers running'))}" data-notr>
+      <div class="dg-t"><b>${esc(T('Serveurs de dev actifs', 'Dev servers running'))}${st.total_mo ? ` · ${esc(mo(st.total_mo))}` : ''}</b><span class="muted">${esc(names)}</span></div>
+      <button class="btn2" data-dg="keep">${esc(T('Garder', 'Keep'))}</button><button class="btn2 pri" data-dg="kill">${esc(T('Tout couper', 'Stop all'))}</button>
+      <div class="dg-bar"><i></i></div></div>`;
+    box.onclick = (e) => { const b = e.target.closest('[data-dg]'); if (b) end(b.dataset.dg === 'kill'); };
+  });
+}
+
 const saveUser = () => { S.homeDirty = true; return invoke('set_user', { u: S.user }).catch((e) => toast(String(e))); };
 
-function toast(msg) {
+function toast(msg, ms = 3200) {
   const t = $('#toast');
   t.className = 'solid on';
   t.innerHTML = `<span class="dot"></span>${esc(msg)}`;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => (t.className = 'solid'), 3200);
+  toast.t = setTimeout(() => (t.className = 'solid'), ms);
 }
 function hexDeep(hex) {
   const n = parseInt((hex || '#888888').slice(1), 16);
@@ -307,9 +364,9 @@ function collections() {
 }
 
 function filtered() {
-  const q = S.q.trim().toLowerCase();
-  let l = visible().filter((g) => (S.src === 'all' || g.source === S.src) && inCol(g, S.col));
-  if (q) l = l.filter((g) => g.name.toLowerCase().includes(q) || g.tags.some((t) => lbl(t).toLowerCase().includes(q)) || (S.memos[g.id] || '').toLowerCase().includes(q));
+  const q = S.q.trim();
+  const l = visible().filter((g) => (S.src === 'all' || g.source === S.src) && inCol(g, S.col));
+  if (q) return ranked(l, q); // best match first: Enter launches it
   const by = {
     recent: (a, b) => b.lastPlayed - a.lastPlayed || b.playtimeMin - a.playtimeMin || a.name.localeCompare(b.name, LOCALE),
     hours: (a, b) => b.playtimeMin - a.playtimeMin,
@@ -520,6 +577,7 @@ function optsMenu(g) {
     <button class="mi" data-act="tab" data-v="memo">Mémo</button>
     <button class="mi" data-act="tab" data-v="review">Noter</button>
     ${g.source === 'pc' ? '<button class="mi" data-act="editgame">Modifier…</button>' : ''}
+    ${canAdmin(g) ? `<button class="mi" role="menuitemcheckbox" aria-checked="${isAdmin(g)}" data-act="admin">${icon.shield}Lancer en admin${isAdmin(g) ? icon.check : ''}</button>` : ''}
     <div class="sep"></div>
     ${g.installed ? `<button class="mi" data-act="backup">Sauvegarder</button>` : ''}
     ${g.installed && g.installPath ? '<button class="mi" data-act="folder">Dossier</button>' : ''}
@@ -625,6 +683,98 @@ function reviewPanel(g) {
   </div>`;
 }
 
+// ---------- recommended settings for this PC (U6) ----------
+
+let HW = null; // detected PC (cached on the Rust side)
+const TUNE_CUR = {}; // game id -> { values, backup } read from its config file, null if unreadable
+const TUNE_LAST = {}; // game id -> last recommendation shown (what « Appliquer » writes)
+const tunePrefs = (g) => ({ slider: 2, target: Math.min(HW?.hz || 60, 120), ...(S.user.tuning?.[g.id] || {}) });
+function ensureTune(g) {
+  if (!HW) invoke('hw_info').then((h) => { HW = h; if (S.view === 'game' && S.tab === 'tune') renderGame(); }).catch(() => {});
+  const sh = sheetFor(g);
+  if (sh && !(g.id in TUNE_CUR)) {
+    TUNE_CUR[g.id] = null;
+    invoke('game_settings', { format: sh.config.format }).then((c) => { TUNE_CUR[g.id] = c; if (S.view === 'game' && S.tab === 'tune') renderGame(); }).catch(() => {});
+  }
+}
+const tv = (v) => (v === true ? T('Activé', 'On') : v === false ? T('Désactivé', 'Off') : v === undefined || v === null || v === '' ? '—' : String(v).replace(/^UI-Settings-Video-QualitySetting-/, ''));
+function tunePanel(g) {
+  if (!HW) return `<div class="tn empty">${T('Détection du PC…', 'Detecting your PC…')}</div>`;
+  const sh = sheetFor(g);
+  const pr = tunePrefs(g);
+  const cur = TUNE_CUR[g.id]?.values || {};
+  const r = recommend({ hw: HW, sheet: sh, current: cur, slider: pr.slider, target: pr.target, lang: LANG });
+  const gpu = r.gpu;
+  const pcLine = [gpu.name.replace(/^NVIDIA GeForce |^AMD Radeon /, ''), `${Math.round(gpu.vram)} ${T('Go', 'GB')}`, cpuShort(HW.cpu), `${Math.round(HW.ramMb / 1024)} ${T('Go', 'GB')}`, `${HW.width} × ${HW.height} · ${HW.hz} Hz`, gpu.dlss ? 'DLSS' : ''].filter(Boolean);
+  const fpsOpts = [...new Set([60, 90, 120, 144, 165, 240, HW.hz].filter((x) => x <= HW.hz))].sort((a, b) => a - b);
+  const verdict = r.verdict === 'out' ? T(`${r.goal} images/s hors de portée dans ce jeu : réglages au plus léger`, `${r.goal} FPS is out of reach in this game: lightest settings`)
+    : r.verdict === 'tight' ? T(`${r.goal} images/s : atteignable, sans grande marge`, `${r.goal} FPS: reachable, with little headroom`)
+      : T(`${r.goal} images/s : atteignable avec de la marge`, `${r.goal} FPS: reachable with headroom`);
+  const cpuNote = r.cpuLimited ? `<span class="tn-cpu">${esc(T(`Au-delà d'environ ${Math.round(r.goal * 0.8 / 10) * 10} images/s en ville, le processeur limite : les graphismes n'y peuvent plus grand-chose.`, `Beyond about ${Math.round(r.goal * 0.8 / 10) * 10} FPS in the city, the CPU is the limit: graphics settings won't help much more.`))}</span>` : '';
+  const head = `<div class="tn-head" data-notr>
+      <div class="tn-pc"><span class="k">${esc(T('TON PC', 'YOUR PC'))}</span><span>${pcLine.map(esc).join(' · ')}</span></div>
+      <div class="tn-ctl">
+        <label class="tn-sl"><span class="k">${esc(T('PERFORMANCE', 'PERFORMANCE'))}</span>
+          <input id="tune-s" type="range" min="0" max="4" step="1" value="${pr.slider}" aria-label="${esc(T('Performance ou qualité', 'Performance or quality'))}" aria-valuetext="${esc(SLIDER[pr.slider][LANG] || SLIDER[pr.slider].fr)}">
+          <span class="k">${esc(T('QUALITÉ', 'QUALITY'))}</span></label>
+        <span class="tn-pos">${esc(SLIDER[pr.slider][LANG] || SLIDER[pr.slider].fr)}</span>
+        <div class="fseg glass" role="radiogroup" aria-label="${esc(T('Cible d\'images/s', 'FPS target'))}">${fpsOpts.map((f) => `<button role="radio" data-act="tune-fps" data-v="${f}" aria-checked="${pr.target === f}" aria-pressed="${pr.target === f}">${f}</button>`).join('')}</div>
+      </div>
+      ${sh ? `<div class="tn-verdict ${r.verdict}"><b>${esc(verdict)} · ${esc(r.upscaler)} ${esc(r.scale[LANG] || r.scale.fr)}</b>${cpuNote}</div>` : ''}
+    </div>`;
+  if (!sh) {
+    return `<div class="tn">${head}<p class="muted tn-note" data-notr>${esc(T('Pas encore de fiche pour ce jeu : conseils généraux pour ton PC.', 'No sheet for this game yet: general advice for your PC.'))}</p>
+      <div class="tn-gen" data-notr>${r.generic.map((x) => `<div class="tn-card"><span class="k">${esc(x.k.toUpperCase())}</span><b>${esc(x.v)}</b><span class="muted">${esc(x.why)}</span></div>`).join('')}</div></div>`;
+  }
+  const known = TUNE_CUR[g.id];
+  const changes = known ? r.rows.filter((x) => x.current !== undefined && String(x.current) !== String(x.rec)).length : 0;
+  TUNE_LAST[g.id] = r;
+  const bakDate = (n) => { const m = /(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)/.exec(n || ''); return m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]}` : ''; };
+  const actions = known ? `<div class="row2 tn-act" data-notr>
+      <button class="btn2 pri" data-act="tune-apply"${changes ? '' : ' disabled'}>${esc(changes ? T(`Appliquer les ${changes} changement(s)`, `Apply ${changes} change(s)`) : T('Déjà à jour', 'Already applied'))}</button>
+      ${known.backup ? `<button class="btn2" data-act="tune-restore" title="${esc(known.backup)}">${esc(T(`Restaurer la sauvegarde du ${bakDate(known.backup)}`, `Restore the ${bakDate(known.backup)} backup`))}</button>` : ''}
+      <span class="muted" style="font-size:12px">${esc(T('Sauvegarde automatique avant chaque écriture, à côté du fichier du jeu. Jeu fermé obligatoire.', 'Automatic backup before every write, next to the game\'s file. The game must be closed.'))}</span>
+    </div>` : '';
+  const src = Object.fromEntries(sh.sources.map((x) => [x.id, x]));
+  return `<div class="tn">${head}
+    <p class="muted tn-note" data-notr>${known ? esc(T(`${changes} réglage(s) diffèrent de ta config actuelle.`, `${changes} setting(s) differ from your current config.`)) : esc(T('Config actuelle du jeu introuvable : seuls les conseils sont affichés.', 'Current game config not found: showing recommendations only.'))}</p>
+    ${actions}
+    <div class="tn-table" role="table" data-notr>
+      <div class="tn-row th" role="row"><span role="columnheader">${esc(T('Réglage', 'Setting'))}</span><span role="columnheader">${esc(T('Actuel', 'Current'))}</span><span role="columnheader">${esc(T('Conseillé', 'Recommended'))}</span><span role="columnheader">${esc(T('Pourquoi', 'Why'))}</span></div>
+      ${r.rows.map((x) => {
+        const diff = known && x.current !== undefined && String(x.current) !== String(x.rec);
+        return `<div class="tn-row${diff ? ' diff' : ''}" role="row"><span role="cell">${esc(x.label)}</span><span role="cell" class="muted">${known ? esc(tv(x.current)) : '—'}</span><span role="cell"><b>${esc(tv(x.rec))}</b></span><span role="cell" class="muted">${esc(x.reason)}${(x.src || []).length ? ` <span class="tn-src">${x.src.map((k) => esc(k.toUpperCase())).join(' · ')}</span>` : ''}</span></div>`;
+      }).join('')}
+    </div>
+    <p class="muted tn-foot" data-notr>${esc(T('Sources :', 'Sources:'))} <br>${sh.sources.map((x) => `<button class="alink" data-act="url" data-v="${esc(x.url)}" style="min-height:0">${esc(x.id.toUpperCase())} · ${esc(x.name)}</button>`).join('<br>')}<br>${esc(T('Estimations sans chiffres d\'images/s promis.', 'Estimates, no promised FPS numbers.'))}</p></div>`;
+}
+async function tuneWrite(g, restore) {
+  const sh = sheetFor(g), r = TUNE_LAST[g.id];
+  if (!sh || (!restore && !r)) return;
+  const label = (k) => r?.rows.find((x) => x.key === k)?.label || k;
+  try {
+    if (restore) {
+      await invoke('restore_settings', { format: sh.config.format });
+      toast(T('Réglages d\'avant restaurés', 'Previous settings restored'), 5000);
+    } else {
+      const values = Object.fromEntries(r.rows.map((x) => [x.key, x.rec]));
+      if ('MaximumFPS_Value' in values) values.MaximumFPS_OnOff = true;
+      const res = await invoke('apply_settings', { format: sh.config.format, values });
+      const skipped = res.skipped.filter((k) => k !== 'MaximumFPS_OnOff');
+      toast(`${T(`${res.changed.length} réglage(s) appliqué(s)`, `${res.changed.length} setting(s) applied`)}${skipped.length ? T(` · à régler dans le jeu : ${skipped.map(label).join(', ')}`, ` · set in game: ${skipped.map(label).join(', ')}`) : ''}`, 7000);
+    }
+  } catch (err) {
+    toast(String(err) === 'game-running' ? T(`Ferme ${g.name} d'abord : il réécrit ses réglages en quittant`, `Close ${g.name} first: it rewrites its settings when it quits`) : String(err), 6000);
+  }
+  delete TUNE_CUR[g.id];
+  ensureTune(g);
+}
+function setTune(g, patch) {
+  S.user.tuning = { ...(S.user.tuning || {}), [g.id]: { ...tunePrefs(g), ...patch } };
+  clearTimeout(setTune.t); setTune.t = setTimeout(saveUser, 400);
+  renderGame();
+}
+
 function memoPanel(g) {
   const memo = S.memos[g.id] || '';
   return `<div class="memo-tab">
@@ -646,8 +796,8 @@ function paintGame() {
   const n = g.steamAppid && S.news[g.steamAppid]?.[0];
   const playing = (S.friends || []).filter((f) => f.game && f.appid && f.appid === g.steamAppid);
   const similar = visible().filter((x) => x.id !== g.id && g.tags[0] && x.tags.includes(g.tags[0])).sort((x, y) => y.lastPlayed - x.lastPlayed || y.playtimeMin - x.playtimeMin).slice(0, 12);
-  const tabs = [['ach', `${T('Succès', 'Achievements')}${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus'], ['shots', 'Captures'], ['review', 'Mon avis'], ['memo', 'Mémo']];
-  const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, review: reviewPanel, memo: memoPanel }[S.tab](g);
+  const tabs = [['ach', `${T('Succès', 'Achievements')}${a ? ` · ${a[0]}/${a[1]}` : ''}`], ['news', 'Actus'], ['shots', 'Captures'], ['tune', T('Réglages', 'Settings')], ['review', 'Mon avis'], ['memo', 'Mémo']];
+  const body = { ach: achPanel, news: newsPanel, shots: shotsPanel, tune: tunePanel, review: reviewPanel, memo: memoPanel }[S.tab](g);
   const title = g.logo
     ? `<img class="logo" src="${esc(th(g.logo, 900))}" alt="${esc(g.name)}" onerror="this.replaceWith(Object.assign(document.createElement('h1'),{className:'title',textContent:${esc(JSON.stringify(g.name))}}))">`
     : `<h1 class="title">${esc(g.name)}</h1>`;
@@ -662,7 +812,7 @@ function paintGame() {
             ${g.tags.slice(0, 5).map((t) => `<button class="tag glass" data-act="gocol" data-v="${esc(t)}" style="color:${catColor(t)}">${esc(lbl(t))}</button>`).join('')}
           </div>
           <div class="btns">
-            <button class="play" data-act="play">${g.installed ? icon.play + 'Jouer' : icon.dl + 'Installer'}</button>
+            <button class="play" data-act="play"${isAdmin(g) ? ` title="${esc(T('Lancement en admin (UAC)', 'Runs as admin (UAC)'))}"` : ''}>${g.installed ? icon.play + 'Jouer' : icon.dl + 'Installer'}${g.installed && isAdmin(g) ? `<span class="adm">${icon.shield}</span>` : ''}</button>
             ${g.update && g.source === 'steam' ? `<button class="ghost glass" data-act="url" data-v="steam://nav/downloads">${icon.upd}Mettre à jour</button>` : ''}
             <button class="ibtn glass round" data-act="fav" aria-label="${isFav(g) ? 'Retirer des favoris' : 'Ajouter aux favoris'}" style="color:${isFav(g) ? '#FFD45C' : '#fff'}">${icon.star(isFav(g))}</button>
             <div class="anchor">
@@ -880,7 +1030,7 @@ function renderModal() {
     return;
   }
   const a = S.acc, u = S.user;
-  const tog = (k, label) => `<label class="tgl"><input type="checkbox" data-pref="${k}" ${u[k] ? 'checked' : ''}><span class="sw"></span><span><b>${label}</b></span></label>`;
+  const tog = (k, label, off = false) => `<label class="tgl${off ? ' off' : ''}"><input type="checkbox" data-pref="${k}" ${u[k] && !off ? 'checked' : ''}${off ? ' disabled' : ''}><span class="sw"></span><span><b>${label}</b></span></label>`;
   const ltog = (k, label) => `<label class="tgl"><input type="checkbox" data-lp="${k}" ${P[k] ? 'checked' : ''}><span class="sw"></span><span><b>${label}</b></span></label>`;
   const seg = (act, cur, opts, label) => `<div class="fseg glass" role="radiogroup" aria-label="${label}" style="align-self:flex-start">${opts.map(([k, x]) => `<button role="radio" data-act="${act}" data-v="${k}" aria-pressed="${cur === k}" aria-checked="${cur === k}">${x}</button>`).join('')}</div>`;
   m.innerHTML = `<div class="overlay" data-act="close-modal">
@@ -915,6 +1065,13 @@ function renderModal() {
         ${ltog('glass', 'Flou des panneaux')}
         ${ltog('motion', 'Animations')}
         <span class="err" id="wp-err"></span>
+      </div>
+
+      <div class="box"><h3>Vigie ${VIG.found ? '<span class="ok">✓</span>' : ''}</h3>
+        ${tog('gameMode', 'Mode jeu pendant les parties', !VIG.caps.gameMode)}
+        ${tog('devGuard', 'Prévenir si des serveurs de dev tournent', !VIG.caps.devState)}
+        <div class="row2"><input id="vg-path" type="text" value="${esc(u.vigiePath || '')}" placeholder="C:\\Dev\\vigie\\dist\\Vigie.exe" aria-label="Chemin de Vigie" style="flex:1"></div>
+        <span class="muted" style="font-size:12px;word-break:break-all">${VIG.found ? esc(VIG.path) + (VIG.caps.devState ? '' : ` · ${esc(T('garde-fou dev : Vigie trop ancien', 'dev guard: Vigie too old'))}`) : 'Vigie introuvable : options inactives.'}</span>
       </div>
 
       <div class="box"><h3>Sauvegardes</h3>
@@ -964,6 +1121,7 @@ function select(id) {
   window.scrollTo({ top: 0 });
   const g = cur();
   ensureNews(g); ensureAch(g); ensureHltb(g); if (g?.source === 'steam') ensureShots(g);
+  if (g?.installed) devFetch();
 }
 function goHome() {
   const back = S.view !== 'home';
@@ -1003,9 +1161,15 @@ async function saveMemo() {
 }
 
 async function launch(g, el) {
-  if (!g) return;
+  if (!g || devPrompt.end) return;
   el?.classList.remove('launching'); void el?.offsetWidth; el?.classList.add('launching');
-  try { await invoke('launch', { id: g.id }); toast(g.installed ? `${g.name}…` : 'Installation…'); } catch (err) { toast(String(err)); }
+  if (g.installed && S.user.devGuard && VIG.caps.devState) {
+    // usually already fetched (hover, game page): otherwise wait 350 ms at most, then play anyway
+    const st = await within(devFetch(), 350);
+    if (devWorth(st) && await devPrompt(st)) { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); }
+  }
+  try { await invoke('launch', { id: g.id }); toast(g.installed ? `${g.name}…` : 'Installation…'); }
+  catch (err) { toast(String(err) === 'uac-refused' ? T('Lancement annulé : droits admin refusés', 'Launch cancelled: admin rights refused') : String(err)); }
 }
 
 async function loadAccounts() { try { S.acc = await invoke('accounts_status'); } catch { /* ignore */ } }
@@ -1041,7 +1205,10 @@ document.addEventListener('click', async (e) => {
       if (S.menu === 'friends') { S.friends = S.friends ?? null; loadSocial(); }
       renderMenus(); return;
     case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
-    case 'tab': S.tab = v; S.menu = null; if (v === 'shots') ensureShots(g); renderGame(); $('#panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    case 'tune-fps': setTune(g, { target: +v }); return;
+    case 'tune-apply': tuneWrite(g, false); return;
+    case 'tune-restore': tuneWrite(g, true); return;
+    case 'tab': S.tab = v; S.menu = null; if (v === 'shots') ensureShots(g); if (v === 'tune') ensureTune(g); renderGame(); $('#panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       if (v === 'memo') setTimeout(() => $('#memo-ta')?.focus(), 350); return;
     case 'achf': S.achF = v; S.achShow = 9; renderGame(); return;
     case 'achmore': S.achShow += 30; renderGame(); return;
@@ -1088,7 +1255,12 @@ document.addEventListener('click', async (e) => {
     case 'soft': S.showSoft = !S.showSoft; renderHome(); return;
     case 'refresh': refresh(); return;
     case 'rescan': S.menu = null; refresh(true); toast('…'); return;
-    case 'settings': S.modal = 'settings'; S.menu = null; await loadAccounts(); renderModal(); return;
+    case 'settings': S.modal = 'settings'; S.menu = null; await Promise.all([loadAccounts(), loadVigie()]); renderModal(); return;
+    case 'admin': {
+      const on = !isAdmin(g);
+      S.user.adminGames = { ...(S.user.adminGames || {}), [g.id]: on };
+      saveUser(); toast(on ? T('Lancement en admin', 'Runs as admin') : T('Lancement normal', 'Runs normally')); renderGame(); return;
+    }
     case 'close-modal': if (e.target === el || el.tagName === 'BUTTON') { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); } return;
     case 'steam-save': {
       const key = $('#steam-key').value.trim(); $('#steam-err').textContent = 'Vérification…';
@@ -1181,6 +1353,11 @@ function renderUpdPill() {
 function commitSettingsText() {
   const d = $('#bk-dir');
   if (d && (d.value.trim() || null) !== (S.user.backupDir || null)) { S.user.backupDir = d.value.trim() || null; saveUser(); }
+  const vp = $('#vg-path');
+  if (vp && (vp.value.trim() || null) !== (S.user.vigiePath || null)) {
+    S.user.vigiePath = vp.value.trim() || null;
+    saveUser().then(loadVigie).then(() => { DEV.at = 0; if (S.modal === 'settings') renderModal(); });
+  }
   const u = $('#up-url');
   if (u && (u.value.trim() || null) !== (S.user.updateUrl || null)) { S.user.updateUrl = u.value.trim() || null; saveUser(); }
 }
@@ -1193,27 +1370,54 @@ function searchMode() {
   if (S.view === 'home') { window.scrollTo({ top: 0 }); layoutGrid(); paintGrid(true); }
 }
 $('#q').addEventListener('focus', () => { if (S.view !== 'home') { S.view = 'home'; render(); } searchMode(); });
-$('#q').addEventListener('blur', () => setTimeout(searchMode, 150));
+$('#q').addEventListener('blur', (e) => { if (e.target.value !== S.q) e.target.value = S.q; setTimeout(searchMode, 150); });
 $('#q').addEventListener('input', (e) => {
-  S.q = e.target.value;
+  const el = e.target;
+  S.q = el.value;
+  // inline completion with the best match, typed part kept, the rest selected (Tab or → accepts)
+  if (e.inputType?.startsWith('insert') && el.selectionStart === el.value.length && S.q.trim()) {
+    const full = completion(el.value, filtered()[0]?.name);
+    if (full) { el.value = full; el.setSelectionRange(S.q.length, full.length); }
+  }
   searchMode();
   clearTimeout(qTimer);
   qTimer = setTimeout(() => { if (S.view !== 'home') { S.view = 'home'; render(); } else renderHome(); }, 80);
 });
+$('#q').addEventListener('keydown', (e) => {
+  const el = e.target;
+  const sel = el.selectionStart < el.selectionEnd && el.selectionEnd === el.value.length;
+  if ((e.key === 'Tab' || e.key === 'ArrowRight' || e.key === 'End') && sel) {
+    e.preventDefault(); el.setSelectionRange(el.value.length, el.value.length);
+    S.q = el.value; renderHome();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const g = filtered()[0];
+    if (g) { el.blur(); launch(g); }
+  }
+});
+$('#q').addEventListener('pointerenter', () => devFetch(), { once: true });
+document.addEventListener('pointerover', (e) => { if (e.target.closest?.('[data-act="play"], [data-act="play-id"]')) devFetch(); });
 document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#q').focus(); $('#q').select(); }
+  const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && k === 'k') { e.preventDefault(); togglePalette(); return; }
+  if (S.pal) { if (e.key === 'Escape') closePalette(); return; } // the palette handles its own keys
+  if (ctrl && k === 'f') { e.preventDefault(); focusSearch(); }
+  if (ctrl && e.key === ',') { e.preventDefault(); act('settings'); }
+  if (e.key === 'F5') { e.preventDefault(); refresh(); }
   if (e.key === 'Escape') back();
   if (e.key === 'Enter' && S.modal?.startsWith('newcol') && document.activeElement?.id === 'col-name') $('[data-act="createcol"]').click();
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement?.id === 'memo-ta') saveMemo();
 });
 function back() {
-  if (S.modal) { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); }
+  if (devPrompt.end) devPrompt.end(false);
+  else if (S.modal) { if (S.modal === 'settings') commitSettingsText(); S.modal = null; renderModal(); }
   else if (S.menu) { S.menu = null; S.sub = null; renderMenus(); }
   else if (S.view !== 'home') goHome();
 }
 document.addEventListener('input', (e) => {
   const id = e.target.id;
   if (id === 'memo-ta') $('#memo-state').textContent = 'Non enregistré';
+  if (id === 'tune-s' && cur()) setTune(cur(), { slider: +e.target.value });
   if (id === 'wp-blur' || id === 'wp-dim') {
     P[id === 'wp-blur' ? 'wpBlur' : 'wpDim'] = +e.target.value; savePrefs();
     $(`#${id}-v`).textContent = e.target.value;
@@ -1234,6 +1438,112 @@ document.addEventListener('change', async (e) => {
     catch (err) { $('#wp-err').textContent = String(err); }
   }
 });
+
+// ---------- Ctrl+K palette: games and commands, fuzzy ----------
+
+/** Runs a data-act action as if its button had been clicked. */
+function act(name, data = {}) {
+  const b = document.createElement('button');
+  b.dataset.act = name; Object.assign(b.dataset, data); b.hidden = true;
+  document.body.append(b); b.click(); b.remove();
+}
+function focusSearch() { $('#q').focus(); $('#q').select(); }
+function commands() {
+  const g = S.view === 'game' ? cur() : null;
+  const onoff = (v) => (v ? T('activé', 'on') : T('désactivé', 'off'));
+  const L = [
+    { t: T('Bibliothèque', 'Library'), k: 'Échap', run: goHome },
+    { t: T('Rechercher dans la bibliothèque', 'Search the library'), k: 'Ctrl F', run: focusSearch },
+    { t: T('Actualiser la bibliothèque', 'Refresh the library'), k: 'F5', run: () => refresh() },
+    { t: T('Statistiques', 'Stats'), run: () => act('stats') },
+    { t: T('Panthéon (jeux à 100 %)', 'Hall of Fame (100% games)'), run: () => act('trophy') },
+    { t: T('Jeux gratuits de la semaine', 'Free games this week'), run: () => act('menu', { menu: 'free' }) },
+    { t: T('Amis Steam', 'Steam friends'), run: () => act('menu', { menu: 'friends' }) },
+    { t: T('Ajouter un jeu (.exe, raccourci)…', 'Add a game (.exe, shortcut)…'), run: () => act('addgame') },
+    { t: T('Paramètres', 'Settings'), k: 'Ctrl ,', run: () => act('settings') },
+    { t: `${T('Mode manette', 'Controller mode')} : ${onoff(P.big)}`, run: () => setBig(!P.big) },
+  ];
+  if (VIG.caps.gameMode) L.push({ t: `${T('Mode jeu Vigie', 'Vigie game mode')} : ${onoff(S.user.gameMode)}`, run: () => { S.user.gameMode = !S.user.gameMode; saveUser(); toast(`Vigie : ${onoff(S.user.gameMode)}`); } });
+  if (VIG.caps.devState) L.push({ t: `${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`, run: () => { S.user.devGuard = !S.user.devGuard; saveUser(); toast(`${T('Garde-fou dev', 'Dev guard')} : ${onoff(S.user.devGuard)}`); } });
+  if (VIG.caps.devKill) L.push({ t: T('Couper les serveurs de dev, Docker et WSL', 'Stop dev servers, Docker and WSL'), run: () => { invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); } });
+  if (g) {
+    if (canAdmin(g)) L.push({ t: `${g.name} · ${T('lancer en admin', 'run as admin')} : ${onoff(isAdmin(g))}`, run: () => act('admin') });
+    if (g.installed) L.push({ t: `${g.name} · ${T('sauvegarder les saves', 'back up saves')}`, run: () => act('backup') });
+    if (g.installed && g.installPath) L.push({ t: `${g.name} · ${T('ouvrir le dossier', 'open folder')}`, run: () => act('folder') });
+    L.push({ t: `${g.name} · ${T('mémo', 'notes')}`, run: () => act('tab', { v: 'memo' }) });
+  }
+  return L;
+}
+const CP = new Map();
+const cprep = (t) => { let e = CP.get(t); if (!e) { e = prep(t); CP.set(t, e); } return e; };
+function palItems(q) {
+  const games = S.games.filter((g) => !isExtra(g) && !isHidden(g));
+  const cmds = commands();
+  if (!q.trim()) {
+    const recent = games.filter((g) => g.installed && g.lastPlayed).sort((a, b) => b.lastPlayed - a.lastPlayed).slice(0, 5);
+    return [...recent.map((g) => ({ g })), ...cmds.slice(0, 9).map((c) => ({ c }))];
+  }
+  const Q = query(q);
+  const out = [];
+  for (const g of games) { const v = rel(Q, g); if (v) out.push({ g, v: v + (g.installed ? 5 : 0) }); }
+  for (const c of cmds) { const v = score(Q, cprep(c.t)); if (v) out.push({ c, v }); }
+  return out.sort((a, b) => b.v - a.v || (b.g?.lastPlayed || 0) - (a.g?.lastPlayed || 0)).slice(0, 12);
+}
+function togglePalette() { if (S.pal) closePalette(); else openPalette(); }
+function openPalette() {
+  S.pal = { q: '', i: 0, items: [] };
+  devFetch();
+  const box = $('#palette');
+  box.innerHTML = `<div class="pal-wrap" data-pal="close"><div class="pal solid" role="dialog" aria-modal="true" aria-label="${esc(T('Palette de commandes', 'Command palette'))}" data-notr>
+    <div class="pal-in"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+      <input id="pal-q" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(T('Jeu ou commande…', 'Game or command…'))}" aria-label="${esc(T('Jeu ou commande', 'Game or command'))}" role="combobox" aria-controls="pal-list" aria-expanded="true"></div>
+    <div id="pal-list" role="listbox"></div>
+    <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> ${esc(T('choisir', 'select'))}</span><span><kbd>${T('Entrée', 'Enter')}</kbd> ${esc(T('lancer', 'run'))}</span><span><kbd>${T('Maj', 'Shift')}</kbd>+<kbd>${T('Entrée', 'Enter')}</kbd> ${esc(T('fiche du jeu', 'game page'))}</span><span><kbd>${T('Échap', 'Esc')}</kbd> ${esc(T('fermer', 'close'))}</span></div>
+  </div></div>`;
+  const inp = $('#pal-q');
+  inp.addEventListener('input', () => { S.pal.q = inp.value; S.pal.i = 0; palList(); });
+  inp.addEventListener('keydown', palKey);
+  box.onclick = (e) => {
+    const it = e.target.closest('[data-pi]');
+    if (it) { palRun(+it.dataset.pi, e.shiftKey); return; }
+    if (e.target.dataset.pal === 'close') closePalette();
+  };
+  box.onpointermove = (e) => { const it = e.target.closest('[data-pi]'); if (it && +it.dataset.pi !== S.pal.i) { S.pal.i = +it.dataset.pi; palSel(); } };
+  palList();
+  inp.focus();
+}
+function closePalette() { S.pal = null; $('#palette').innerHTML = ''; }
+function palList() {
+  const p = S.pal; p.items = palItems(p.q);
+  const kbd = (k) => (k ? `<span class="pal-k">${k.split(' ').map((x) => `<kbd>${esc(x === 'Échap' ? T('Échap', 'Esc') : x)}</kbd>`).join('')}</span>` : '');
+  $('#pal-list').innerHTML = p.items.map((x, i) => x.g
+    ? `<div class="pal-row" role="option" data-pi="${i}" aria-selected="${i === p.i}">
+        <span class="pal-ic cov">${x.g.cover ? `<img src="${esc(th(x.g.cover, 80))}" alt="" loading="lazy">` : ''}</span>
+        <span class="pal-t"><b>${esc(x.g.name)}</b><span class="muted">${esc(SRC[x.g.source] || '')}${x.g.lastPlayed ? ` · ${esc(ago(x.g.lastPlayed))}` : ''}${isAdmin(x.g) ? ` · ${esc(T('admin', 'admin'))}` : ''}</span></span>
+        <span class="pal-go">${x.g.installed ? T('Jouer', 'Play') : T('Installer', 'Install')}</span></div>`
+    : `<div class="pal-row" role="option" data-pi="${i}" aria-selected="${i === p.i}">
+        <span class="pal-ic">${icon.right}</span><span class="pal-t"><b>${esc(x.c.t)}</b></span>${kbd(x.c.k)}</div>`).join('')
+    || `<div class="pal-empty muted">${esc(T('Aucun résultat.', 'No results.'))}</div>`;
+}
+function palSel() {
+  for (const r of document.querySelectorAll('#pal-list [data-pi]')) r.setAttribute('aria-selected', String(+r.dataset.pi === S.pal.i));
+  document.querySelector(`#pal-list [data-pi="${S.pal.i}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+function palKey(e) {
+  const p = S.pal, n = p.items.length;
+  if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); if (n) { p.i = (p.i + 1) % n; palSel(); } }
+  else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) { e.preventDefault(); if (n) { p.i = (p.i - 1 + n) % n; palSel(); } }
+  else if (e.key === 'Enter') { e.preventDefault(); palRun(p.i, e.shiftKey); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePalette(); }
+}
+function palRun(i, page) {
+  const x = S.pal?.items[i];
+  if (!x) return;
+  closePalette();
+  if (x.c) x.c.run();
+  else if (page) select(x.g.id);
+  else launch(x.g);
+}
 
 // ---------- gamepad: spatial navigation ----------
 
@@ -1272,7 +1582,7 @@ function pollPad() {
     const edge = (i) => b(i) && !PAD.prev[i];
     if (edge(0)) document.activeElement?.click();
     if (edge(1)) back();
-    if (edge(3)) { $('#q').focus(); }
+    if (edge(3)) { if (S.pal) closePalette(); else togglePalette(); }
     if (edge(9)) setBig(!P.big);
     PAD.prev = Object.fromEntries(pad.buttons.map((x, i) => [i, x.pressed]));
   }
@@ -1306,6 +1616,9 @@ function onLibrary(list) {
   render();
   if (P.big) getCurrentWindow().setFullscreen(true).catch(() => {});
   await listen('library', (e) => onLibrary(e.payload));
+  await listen('hw', (e) => { HW = e.payload; if (S.view === 'game' && S.tab === 'tune') renderGame(); });
+  await listen('vigie', (e) => { if (e.payload?.msg) toast(`Vigie · ${e.payload.msg}`, 6000); });
+  loadVigie();
   await listen('achsum', (e) => { S.achsum = e.payload; if (S.view === 'home') onLibrary(S.games); else S.homeDirty = true; });
   await loadAccounts();
   refresh();

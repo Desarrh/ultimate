@@ -24,6 +24,9 @@ Updates install from inside the app in one click (signed packages).
 ## Features
 
 - **Unified library** — installed and owned games from Steam, Epic Games and GOG, plus anything you add by `.exe` or shortcut.
+- **Fuzzy search & command palette** — typos, initials ("bg3") and accents are fine, inline completion, Enter plays the first match; `Ctrl+K` opens a palette of games and commands.
+- **Run as admin** — games added by `.exe` start elevated by default (some need it), switchable per game; Ultimate itself never asks for admin rights.
+- **Game mode (optional)** — with Vigie (a companion task manager) installed, frees RAM before you play and restores everything after, and offers to stop dev servers, Docker or WSL first.
 - **Automatic collections** — Souls-like, Survival, Roguelite, Co-op… built from Steam user tags; add your own collections and favorites.
 - **The colour follows the game** — the play button, bars and background take each game's dominant colour.
 - **Achievements** — Steam and Epic, with rarity, unlock dates and a Steam-like list view when sorting by achievements.

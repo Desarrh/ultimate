@@ -1,10 +1,14 @@
 mod accounts;
 mod extra;
+mod gameconf;
+mod hw;
 mod img;
 mod saves;
 mod meta;
 mod scan;
 mod vdf;
+mod vigie;
+mod win;
 
 use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -335,18 +339,204 @@ async fn do_refresh(app: &AppHandle, force: bool) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Hand-added .exe games run as admin unless turned off (some games need it); GOG games
+/// (also started from their .exe) can opt in. Steam/Epic go through their launcher: never.
+fn wants_admin(u: &User, g: &Game) -> bool {
+    let exe = g.launch.to_lowercase();
+    let can = (g.source == "pc" || g.source == "gog") && !g.launch.contains("://") && [".exe", ".lnk", ".bat"].iter().any(|e| exe.ends_with(e));
+    can && u.admin_games.get(&g.id).copied().unwrap_or(g.source == "pc" && exe.ends_with(".exe"))
+}
+
+/// Games running with the Vigie game mode on: `--avant-jeu` when the first starts,
+/// `--apres-jeu` when the last one closes.
+static GAME_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Runs a Vigie command in the background (never awaited) and shows its one-line summary.
+fn vigie_bg(app: &AppHandle, args: Vec<&'static str>, timeout_s: u64) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let st = app.state::<AppState>();
+        let u = user(&st);
+        let Some(exe) = vigie::find(u.vigie_path.as_deref()) else { return };
+        let Some(out) = vigie::run(&exe, &args, std::time::Duration::from_secs(timeout_s)) else { return };
+        let Some(msg) = out.lines().map(str::trim).filter(|l| !l.is_empty()).last().map(str::to_string) else { return };
+        let _ = app.emit("vigie", serde_json::json!({ "arg": args[0], "msg": msg }));
+        let focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
+        if !focused && u.notify {
+            notify(&app, "Vigie", &msg);
+        }
+    });
+}
+
+fn game_mode_on(app: &AppHandle) -> bool {
+    let u = user(&app.state::<AppState>());
+    u.game_mode && vigie::find(u.vigie_path.as_deref()).map(|e| vigie::caps(&e).game_mode).unwrap_or(false)
+}
+
 #[tauri::command]
-fn launch(app: AppHandle, id: String) -> Result<(), String> {
+async fn launch(app: AppHandle, id: String) -> Result<(), String> {
     let st = app.state::<AppState>();
     let g = st.lib.lock().unwrap().iter().find(|g| g.id == id).cloned().ok_or("Jeu introuvable")?;
-    open_target(&g.launch)?;
-    // hand-added games are measured by watch_pc (also when started outside Ultimate)
-    if let Some(dir) = g.install_path.filter(|_| g.installed && g.source != "pc") {
-        if st.tracking.lock().unwrap().insert(id.clone()) {
-            track(app.clone(), id, dir);
-        }
+    if !vigie::allowed(std::path::Path::new(&g.launch)) {
+        return Err("Mode test : lancement bloqué hors du bac à sable".into());
     }
+    let admin = wants_admin(&user(&st), &g);
+    let target = g.launch.clone();
+    // off the main thread: the UAC prompt blocks ShellExecuteEx until it is answered
+    tauri::async_runtime::spawn_blocking(move || if admin { win::run_as_admin(&target) } else { open_target(&target) })
+        .await
+        .map_err(|e| e.to_string())??;
+    let Some(dir) = g.install_path.filter(|_| g.installed) else { return Ok(()) };
+    if !st.tracking.lock().unwrap().insert(id.clone()) {
+        return Ok(()); // already running and watched
+    }
+    let game_mode = tauri::async_runtime::spawn_blocking({ let app = app.clone(); move || game_mode_on(&app) }).await.unwrap_or(false);
+    if game_mode && GAME_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+        vigie_bg(&app, vec!["--avant-jeu"], 45);
+    }
+    // hand-added games are timed by watch_pc (also when started outside Ultimate): here we only
+    // follow the session
+    track(app.clone(), id, dir, g.source != "pc", game_mode);
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VigieStatus {
+    found: bool,
+    path: Option<String>,
+    caps: vigie::Caps,
+}
+
+#[tauri::command]
+async fn vigie_status(app: AppHandle) -> VigieStatus {
+    let u = user(&app.state::<AppState>());
+    tauri::async_runtime::spawn_blocking(move || {
+        let exe = vigie::find(u.vigie_path.as_deref());
+        let caps = exe.as_deref().map(vigie::caps).unwrap_or_default();
+        VigieStatus { found: exe.is_some(), path: exe.map(|p| p.to_string_lossy().to_string()), caps }
+    }).await.unwrap_or(VigieStatus { found: false, path: None, caps: Default::default() })
+}
+
+/// Dev servers, Docker, WSL currently running, as reported by `Vigie --etat-dev`. None when
+/// Vigie is absent, too old or slower than 1.5 s.
+#[tauri::command]
+async fn dev_state(app: AppHandle) -> Option<serde_json::Value> {
+    let u = user(&app.state::<AppState>());
+    tauri::async_runtime::spawn_blocking(move || {
+        let exe = vigie::find(u.vigie_path.as_deref())?;
+        if !vigie::caps(&exe).dev_state {
+            return None;
+        }
+        let mut v = vigie::parse_dev_state(&vigie::run(&exe, &["--etat-dev"], std::time::Duration::from_millis(1500))?)?;
+        let own = own_dev_servers(&mut v);
+        OWN_DEV_SERVER.store(own, std::sync::atomic::Ordering::Relaxed);
+        Some(v)
+    }).await.ok().flatten()
+}
+
+/// A dev build of Ultimate runs from its own vite server (`npm run tauri dev`): never offer to cut
+/// it. Its items are removed from the list (release builds: nothing to remove).
+static OWN_DEV_SERVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn own_dev_servers(v: &mut serde_json::Value) -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Some(items) = v.get_mut("items").and_then(|i| i.as_array_mut()) else { return false };
+    let before = items.len();
+    items.retain(|it| it.get("projet").and_then(|p| p.as_str()).map(|p| p.to_lowercase().trim_end_matches('\\') != root).unwrap_or(true));
+    let removed = items.len() != before;
+    let total: u64 = items.iter().filter_map(|it| it.get("ram_mo").and_then(|r| r.as_u64())).sum();
+    v["total_mo"] = total.into();
+    removed
+}
+
+/// "Tout couper": `Vigie --couper-dev`, detached; its summary arrives later as a "vigie" event.
+/// Dev build next to its own vite server: Docker and WSL only, the dev servers are kept.
+#[tauri::command]
+fn dev_kill(app: AppHandle) {
+    let args = if OWN_DEV_SERVER.load(std::sync::atomic::Ordering::Relaxed) { vec!["--couper-dev", "--docker", "--wsl"] } else { vec!["--couper-dev"] };
+    vigie_bg(&app, args, 60);
+}
+
+// ---------- recommended settings (U6): hardware and the game's current settings ----------
+
+/// The PC, from the `hw.json` cache when there is one (instant); a fresh detection runs in the
+/// background and emits "hw" if something changed (new card, other display mode).
+#[tauri::command]
+async fn hw_info(app: AppHandle) -> hw::Hw {
+    let path = app.state::<AppState>().dir.join("hw.json");
+    let cached: hw::Hw = load(&path);
+    if cached.width == 0 {
+        let h = tauri::async_runtime::spawn_blocking(hw::detect).await.unwrap_or_default();
+        save(&path, &h);
+        return h;
+    }
+    let app2 = app.clone();
+    let old = cached.clone();
+    std::thread::spawn(move || {
+        let h = hw::detect();
+        if h != old && h.width > 0 {
+            save(&path, &h);
+            let _ = app2.emit("hw", &h);
+        }
+    });
+    cached
+}
+
+/// Current settings of a game with a known config file, and Ultimate's newest backup of it.
+/// `format` comes from the game's sheet; the path is resolved here, never taken from the front.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameSettings {
+    values: HashMap<String, serde_json::Value>,
+    /// newest backup made by Ultimate (file name), for "Restore"
+    backup: Option<String>,
+}
+
+#[tauri::command]
+fn game_settings(format: String) -> Option<GameSettings> {
+    let file = match format.as_str() { "cp2077" => gameconf::cp2077_path()?, _ => return None };
+    let v: serde_json::Value = serde_json::from_slice(&fs::read(&file).ok()?).ok()?;
+    let backup = gameconf::backups(&file).first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
+    Some(GameSettings { values: gameconf::cp2077_flat(&v), backup })
+}
+
+/// Writes the recommended values (known keys and accepted values only), after a timestamped
+/// backup next to the file. Refused while the game runs: it would overwrite the file on exit.
+#[tauri::command]
+async fn apply_settings(format: String, values: HashMap<String, serde_json::Value>) -> Result<gameconf::Applied, String> {
+    if format != "cp2077" {
+        return Err("Jeu non pris en charge".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if gameconf::cp2077_running() {
+            return Err("game-running".to_string());
+        }
+        gameconf::apply_file(&gameconf::cp2077_path().ok_or("Dossier introuvable")?, &values)
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Puts Ultimate's newest backup back.
+#[tauri::command]
+async fn restore_settings(format: String) -> Result<String, String> {
+    if format != "cp2077" {
+        return Err("Jeu non pris en charge".into());
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        if gameconf::cp2077_running() {
+            return Err("game-running".to_string());
+        }
+        gameconf::restore_file(&gameconf::cp2077_path().ok_or("Dossier introuvable")?)
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Test sandbox folder (`ULTIMATE_TEST_SANDBOX`), None in normal use. Automated tests refuse to
+/// run without it.
+#[tauri::command]
+fn test_mode() -> Option<String> {
+    vigie::sandbox().map(|p| p.to_string_lossy().to_string())
 }
 
 /// Playtime of hand-added games: every 20 s, is their .exe running? Counts from start to exit,
@@ -354,8 +544,6 @@ fn launch(app: AppHandle, id: String) -> Result<(), String> {
 fn watch_pc(app: AppHandle) {
     std::thread::spawn(move || {
         use std::time::{Duration, Instant};
-        use sysinfo::{ProcessesToUpdate, System};
-        let mut sys = System::new();
         let mut running: HashMap<String, Instant> = HashMap::new();
         loop {
             std::thread::sleep(Duration::from_secs(20));
@@ -366,8 +554,8 @@ fn watch_pc(app: AppHandle) {
             if games.is_empty() && running.is_empty() {
                 continue;
             }
-            sys.refresh_processes(ProcessesToUpdate::All, true);
-            let live: HashSet<String> = sys.processes().values().filter_map(|p| p.exe()).map(|e| e.to_string_lossy().to_lowercase()).collect();
+            // win::exe_paths also sees games started as admin (sysinfo does not)
+            let live: HashSet<String> = win::exe_paths().into_iter().collect();
             let mut changed = false;
             for (id, exe) in &games {
                 let on = live.contains(exe);
@@ -410,24 +598,28 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Measures a session by watching for a running process inside the game's folder.
-fn track(app: AppHandle, id: String, dir: String) {
+/// Follows a session by watching for a running process inside the game's folder (Steam included).
+/// `count`: add the minutes (not for Steam, whose time comes from Steam, nor hand-added games,
+/// timed by watch_pc). `game_mode`: `Vigie --apres-jeu` at the end.
+fn track(app: AppHandle, id: String, dir: String, count: bool, game_mode: bool) {
     std::thread::spawn(move || {
         use std::time::{Duration, Instant};
-        use sysinfo::{ProcessesToUpdate, System};
         let dir = dir.to_lowercase();
-        let mut sys = System::new();
-        let mut running = || {
-            sys.refresh_processes(ProcessesToUpdate::All, true);
-            sys.processes().values().any(|p| p.exe().map(|e| e.to_string_lossy().to_lowercase().starts_with(&dir)).unwrap_or(false))
-        };
+        let dir = if dir.ends_with('\\') { dir } else { dir + "\\" };
+        let running = || win::exe_paths().iter().any(|e| e.starts_with(&dir));
         let st = app.state::<AppState>();
+        let end_game_mode = || {
+            if game_mode && GAME_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                vigie_bg(&app, vec!["--apres-jeu"], 30);
+            }
+        };
         let mut waited = 0;
         while !running() {
             std::thread::sleep(Duration::from_secs(5));
             waited += 5;
             if waited > 240 {
                 st.tracking.lock().unwrap().remove(&id);
+                end_game_mode();
                 return;
             }
         }
@@ -437,7 +629,11 @@ fn track(app: AppHandle, id: String, dir: String) {
         }
         let mins = (start.elapsed().as_secs() + 30) / 60;
         st.tracking.lock().unwrap().remove(&id);
-        {
+        end_game_mode();
+        if id.starts_with("pc:") {
+            return; // watch_pc keeps its time and last-played date
+        }
+        if count {
             let mut t = st.tracked.lock().unwrap();
             *t.entry(id.clone()).or_insert(0) += mins;
             save(&st.dir.join("tracked.json"), &*t);
@@ -446,7 +642,7 @@ fn track(app: AppHandle, id: String, dir: String) {
             let mut lib = st.lib.lock().unwrap();
             if let Some(g) = lib.iter_mut().find(|g| g.id == id) {
                 g.last_played = now();
-                if g.source != "steam" {
+                if count && g.source != "steam" {
                     g.tracked_min += mins;
                     g.playtime_min += mins;
                 }
@@ -724,10 +920,20 @@ pub struct User {
     ratings: HashMap<String, serde_json::Value>,
     update_url: Option<String>,
     lang: String,
+    /// Vigie game mode (`--avant-jeu` / `--apres-jeu`) around each session
+    game_mode: bool,
+    /// warn about dev servers / Docker / WSL before playing (needs `Vigie --etat-dev`)
+    dev_guard: bool,
+    /// Vigie.exe (or its folder), tried before the dev build (C:\Dev\vigie\dist) and the folder of Ultimate
+    vigie_path: Option<String>,
+    /// per-game "run as admin" override (default: on for hand-added .exe)
+    admin_games: HashMap<String, bool>,
+    /// recommended settings, per game: { slider: 0..4, target: FPS }
+    tuning: HashMap<String, serde_json::Value>,
 }
 impl Default for User {
     fn default() -> Self {
-        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None, lang: "en".into() }
+        User { collections: vec![], favorites: vec![], hidden: vec![], close_to_tray: true, autostart: false, notify: true, auto_backup: true, backup_dir: None, seen_free: vec![], seen_deals: vec![], ratings: HashMap::new(), update_url: None, lang: "en".into(), game_mode: true, dev_guard: true, vigie_path: None, admin_games: HashMap::new(), tuning: HashMap::new() }
     }
 }
 
@@ -896,6 +1102,9 @@ fn open_backups(st: State<AppState>) -> Result<(), String> {
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
+    if vigie::sandbox().is_some() {
+        return; // automated tests never show anything outside the app
+    }
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
@@ -1133,6 +1342,9 @@ fn show_main(app: &AppHandle) {
 /// focus it and exit. Any Ultimate started before this exe was installed is an old version: close it.
 fn close_stale_instances() {
     use sysinfo::{ProcessesToUpdate, System};
+    if vigie::sandbox().is_some() {
+        return; // automated test: never close the user's own Ultimate
+    }
     let Ok(me) = std::env::current_exe() else { return };
     let Some(installed) = fs::metadata(&me).and_then(|m| m.modified()).ok() else { return };
     let mine = std::process::id();
@@ -1236,7 +1448,7 @@ pub fn run() {
             watch_pc(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version, vigie_status, dev_state, dev_kill, test_mode, hw_info, game_settings, apply_settings, restore_settings])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }
@@ -1248,5 +1460,18 @@ mod tests {
         assert_eq!(super::ymd(0), "1970-01-01");
         assert_eq!(super::ymd(1710432249), "2024-03-14");
         assert_eq!(super::ymd(951782400), "2000-02-29");
+    }
+
+    #[test]
+    fn own_vite_server_is_hidden_in_dev() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_string_lossy().to_string();
+        let mut v = serde_json::json!({"v":1,"items":[
+            {"kind":"node","label":"vite","ram_mo":47,"projet":root},
+            {"kind":"node","label":"npm run dev","ram_mo":800,"projet":"C:/Dev/x"},
+            {"kind":"wsl","label":"WSL","ram_mo":900,"projet":null}],"total_mo":1747});
+        assert!(super::own_dev_servers(&mut v));
+        assert_eq!(v["items"].as_array().unwrap().len(), 2);
+        assert_eq!(v["total_mo"], 1700);
+        assert!(!super::own_dev_servers(&mut v));
     }
 }
