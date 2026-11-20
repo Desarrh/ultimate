@@ -143,6 +143,14 @@ pub fn parse_dev_state(s: &str) -> Option<serde_json::Value> {
     (v.get("v")?.as_u64()? == 1 && v.get("items")?.is_array()).then_some(v)
 }
 
+/// `--memoire-jeu` output, kept only when the game is known and memory is missing:
+/// {"v":1,"connu":true,"nom":"x.exe","pic_mo":9000,"disponible_mo":7600,"manque_mo":1400}.
+pub fn parse_game_memory(s: &str) -> Option<serde_json::Value> {
+    let line = s.lines().rev().find(|l| l.trim_start().starts_with('{'))?;
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    (v.get("v")?.as_u64()? == 1 && v.get("connu")?.as_bool()? && v.get("manque_mo")?.as_u64()? > 0).then_some(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +163,14 @@ mod tests {
         assert!(parse_dev_state(r#"{"v":2,"items":[]}"#).is_none());
         assert!(parse_dev_state("2,3 Go libérés").is_none());
         assert!(parse_dev_state("").is_none());
+    }
+
+    #[test]
+    fn game_memory_format() {
+        assert_eq!(parse_game_memory(r#"{"v":1,"connu":true,"nom":"x.exe","pic_mo":9000,"disponible_mo":7600,"manque_mo":1400}"#).unwrap()["manque_mo"], 1400);
+        assert!(parse_game_memory(r#"{"connu":false,"disponible_mo":27318,"v":1}"#).is_none());
+        assert!(parse_game_memory(r#"{"v":1,"connu":true,"pic_mo":4000,"disponible_mo":7600,"manque_mo":0}"#).is_none());
+        assert!(parse_game_memory("").is_none());
     }
 
     #[test]

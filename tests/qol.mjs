@@ -180,6 +180,15 @@ await check('réglages conseillés : appliquer puis restaurer (copie, jamais le 
   return `« ${label} » → « ${toastTxt.trim()} », bouton ensuite « ${after} » ; restauré à l'octet près, vrai fichier intact`;
 });
 
+await check('mémoire manquante (Vigie --memoire-jeu) sous Jouer', async () => {
+  fs.writeFileSync(CALLS, '');
+  await page.evaluate(() => { const b = document.createElement('button'); b.dataset.act = 'sel'; b.dataset.id = 'pc:qafake'; document.body.append(b); b.click(); b.remove(); });
+  await page.waitForFunction(() => { const m = document.querySelector('#memhint'); return m && !m.hidden && m.textContent.trim(); }, { timeout: 5000 });
+  const txt = await page.$eval('#memhint', (e) => e.textContent.trim());
+  assert(/1[.,]4/.test(txt) && /--memoire-jeu .*Game\.exe/i.test(calls()), `${txt} | ${calls()}`);
+  return txt;
+});
+
 console.log(errors.length ? `Erreurs JS : ${errors.join(' / ')}` : 'Aucune erreur JS');
 await browser.disconnect();
 process.exit(fails || errors.length ? 1 : 0);

@@ -503,3 +503,5 @@ body.nomotion main { animation: none; }
 @media (max-width: 900px) { .tn-row { grid-template-columns: 1fr 1fr; } .tn-row > :last-child { grid-column: 1 / -1; } }
 .tn-act { margin: 0 0 14px; align-items: center; flex-wrap: wrap; gap: 10px 12px; }
 .tn-act .btn2[disabled] { opacity: .5; cursor: default; }
+.memhint { display: block; margin-top: -6px; font-size: 13px; color: #FFB020; }
+.memhint[hidden] { display: none; }

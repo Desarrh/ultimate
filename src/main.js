@@ -138,6 +138,25 @@ function devFetch() {
   DEV.p ??= invoke('dev_state').catch(() => null).then((v) => { DEV.v = v; DEV.at = performance.now(); DEV.p = null; return v; });
   return DEV.p;
 }
+// RAM missing for a game (Vigie --memoire-jeu), fetched with the dev state; shown under Play.
+const MEM = {}; // id -> { at, v }
+function memFetch(g) {
+  if (!g?.installed || !VIG.caps.gameMemory) return;
+  const m = MEM[g.id];
+  if (m && (m.p || performance.now() - m.at < 20000)) return;
+  MEM[g.id] = { at: 0, v: m?.v, p: invoke('game_memory', { id: g.id }).catch(() => null).then((v) => {
+    MEM[g.id] = { at: performance.now(), v };
+    if (S.view === 'game' && S.sel === g.id) paintMem(g);
+  }) };
+}
+function paintMem(g) {
+  const el = $('#memhint');
+  if (!el) return;
+  const v = MEM[g.id]?.v;
+  el.innerHTML = v ? `${esc(T(`Il te manque ${mo(v.manque_mo)} pour ce jeu`, `${mo(v.manque_mo)} of RAM missing for this game`))}${VIG.caps.devKill ? ` · <button class="alink" data-act="dev-kill" style="min-height:0">${esc(T('Tout couper', 'Stop dev servers'))}</button>` : ''}` : '';
+  el.hidden = !v;
+}
+
 /** Worth asking? WSL alone is often up (~1 Go) and only counts from 2 Go. */
 const devWorth = (st) => (st?.items || []).some((x) => x.kind !== 'wsl' || (x.ram_mo || 0) >= 2048);
 const within = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
@@ -789,7 +808,7 @@ function memoPanel(g) {
   </div>`;
 }
 
-function renderGame() { keepScroll($('#game'), paintGame); optsSlot(); }
+function renderGame() { keepScroll($('#game'), paintGame); optsSlot(); const g = cur(); if (g) paintMem(g); }
 function paintGame() {
   const g = cur();
   if (!g) { goHome(); return; }
@@ -825,6 +844,7 @@ function paintGame() {
               <div id="opts-menu"></div>
             </div>
           </div>
+          <span class="memhint" id="memhint" data-notr hidden></span>
           <div class="stats glass">
             <div><span class="k">TEMPS DE JEU</span><span class="v">${g.playtimeMin ? fmtH(g.playtimeMin) : '—'}</span></div>
             <button data-act="tab" data-v="ach"><span class="k">SUCCÈS ›</span><span class="v">${a ? `${a[0]} / ${a[1]}<span class="minibar"><span style="width:${p}%"></span></span>` : '—'}</span></button>
@@ -1141,7 +1161,7 @@ function select(id) {
   window.scrollTo({ top: 0 });
   const g = cur();
   ensureNews(g); ensureAch(g); ensureHltb(g); if (g?.source === 'steam') ensureShots(g);
-  if (g?.installed) devFetch();
+  if (g?.installed) { devFetch(); memFetch(g); }
 }
 function goHome() {
   const back = S.view !== 'home';
@@ -1234,6 +1254,7 @@ document.addEventListener('click', async (e) => {
       renderMenus(); return;
     case 'sub': S.sub = S.sub === v ? null : v; optsSlot(); return;
     case 'tune-fps': setTune(g, { target: +v }); return;
+    case 'dev-kill': invoke('dev_kill').catch(() => {}); DEV.at = 0; toast(T('Arrêt des serveurs de dev…', 'Stopping dev servers…')); return;
     case 'confirm-yes': closeConfirm(true); return;
     case 'confirm-no': if (e.target.closest('.dialog') && el.classList.contains('overlay')) return; closeConfirm(false); return;
     case 'tune-apply': tuneWrite(g, false); return;
@@ -1426,7 +1447,12 @@ $('#q').addEventListener('keydown', (e) => {
   }
 });
 $('#q').addEventListener('pointerenter', () => devFetch(), { once: true });
-document.addEventListener('pointerover', (e) => { if (e.target.closest?.('[data-act="play"], [data-act="play-id"]')) devFetch(); });
+document.addEventListener('pointerover', (e) => {
+  const b = e.target.closest?.('[data-act="play"], [data-act="play-id"]');
+  if (!b) return;
+  devFetch();
+  memFetch(b.dataset.id ? S.games.find((x) => x.id === b.dataset.id) : cur());
+});
 document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && k === 'k') { e.preventDefault(); togglePalette(); return; }

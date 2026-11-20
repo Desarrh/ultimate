@@ -517,6 +517,24 @@ fn own_dev_servers(v: &mut serde_json::Value) -> bool {
     removed
 }
 
+/// RAM this game needs and what is missing now, from Vigie (`--memoire-jeu <exe>`), when Vigie
+/// knows the game's peak and some memory is missing. None otherwise (absent, old, unknown game…).
+#[tauri::command]
+async fn game_memory(app: AppHandle, id: String) -> Option<serde_json::Value> {
+    let st = app.state::<AppState>();
+    let g = st.lib.lock().unwrap().iter().find(|g| g.id == id).cloned()?;
+    // Ultimate only knows the exe of hand-added games (Steam / Epic / GOG: just their folder)
+    let target = (g.source == "pc" && g.launch.to_lowercase().ends_with(".exe")).then(|| g.launch.clone())?;
+    let u = user(&st);
+    tauri::async_runtime::spawn_blocking(move || {
+        let exe = vigie::find(u.vigie_path.as_deref())?;
+        if !vigie::caps(&exe).game_memory {
+            return None;
+        }
+        vigie::parse_game_memory(&vigie::run(&exe, &["--memoire-jeu", &target], std::time::Duration::from_millis(1500))?)
+    }).await.ok().flatten()
+}
+
 /// "Tout couper": `Vigie --couper-dev`, detached; its summary arrives later as a "vigie" event.
 /// Dev build next to its own vite server: Docker and WSL only, the dev servers are kept.
 #[tauri::command]
@@ -1529,7 +1547,7 @@ pub fn run() {
             watch_pc(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version, vigie_status, dev_state, dev_kill, test_mode, hw_info, game_settings, apply_settings, restore_settings])
+        .invoke_handler(tauri::generate_handler![get_cached, refresh, launch, open_folder, open_url, news, free_games, get_memos, set_memo, accounts_status, set_steam_key, epic_login, epic_connect, epic_disconnect, get_achsum, achievements, sync_achievements, set_wallpaper, get_wallpaper, image_accent, get_user, set_user, get_history, friends, wishlist, steam_free_games, gog_free_games, screenshots, open_path, backup_save, open_backups, add_custom, update_custom, remove_custom, steam_search, hltb, check_update, install_update, app_version, vigie_status, dev_state, dev_kill, game_memory, test_mode, hw_info, game_settings, apply_settings, restore_settings])
         .run(tauri::generate_context!())
         .expect("erreur au lancement");
 }
